@@ -29,6 +29,10 @@ CORPUS_ROOT = Path.home() / "Documents" / "innerdance corpus"
 _encoder = tiktoken.get_encoding("o200k_base")
 
 
+def count_tokens(text: str) -> int:
+    return len(_encoder.encode(text))
+
+
 @dataclass
 class Document:
     source: str    # path relative to the corpus root
@@ -111,7 +115,7 @@ def load_document(path: Path, root: Path) -> Document:
         date=date.fromtimestamp(path.stat().st_mtime).isoformat(),
         section=relative.parts[0] if len(relative.parts) > 1 else "(root)",
         text=text,
-        n_tokens=len(_encoder.encode(text)),
+        n_tokens=count_tokens(text),
     )
 
 
