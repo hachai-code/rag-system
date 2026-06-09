@@ -1,0 +1,2 @@
+The corpus are innerdance related documents.
+The purpose of this RAG system is to easily query innerdance related questions and find supportive material that aid in the learning of the innerdance concepts, creating various connections between topics.
