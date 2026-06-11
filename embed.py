@@ -9,10 +9,12 @@ than duplicating them.
 """
 
 import datetime
+import logging
 import os
 
 import psycopg
 import voyageai
+from ai_utils import UsageTracker
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
@@ -23,12 +25,14 @@ from ingest import CORPUS_ROOT, Document, load_corpus
 load_dotenv()
 
 DB_URL = "postgresql://postgres:postgres@localhost:5432/rag"
-VOYAGE_MODEL = "voyage-3.5"
+VOYAGE_MODEL = "voyage-4"  # same price as 3.5, newer, includes 200M free tokens
 EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/init.sql
 BATCH_SIZE = 128   # texts per request; limits are 1000 texts / 320K tokens
 
 
-def embed_batches(client: voyageai.Client, texts: list[str]) -> list[list[float]]:
+def embed_batches(
+    client: voyageai.Client, texts: list[str], tracker: UsageTracker
+) -> list[list[float]]:
     """Embed texts in batches. input_type='document' tunes the vectors for being
     the searched corpus (queries are embedded with input_type='query')."""
     embeddings: list[list[float]] = []
@@ -41,6 +45,7 @@ def embed_batches(client: voyageai.Client, texts: list[str]) -> list[list[float]
             output_dimension=EMBED_DIM,
         )
         embeddings.extend(result.embeddings)
+        tracker.record(VOYAGE_MODEL, result.total_tokens)
         print(f"  embedded {start + len(batch)}/{len(texts)}", flush=True)
     return embeddings
 
@@ -87,12 +92,17 @@ def main() -> None:
     if not os.environ.get("VOYAGE_API_KEY"):
         raise SystemExit("VOYAGE_API_KEY is not set. Add it to .env or export it.")
 
+    # Surface ai_utils' per-call cost logs while keeping third-party libs quiet.
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    logging.getLogger("ai_utils").setLevel(logging.INFO)
+
     documents = load_corpus(CORPUS_ROOT)
     chunks = chunk_corpus(documents)
     print(f"Embedding {len(chunks)} chunks with {VOYAGE_MODEL} ...")
 
     client = voyageai.Client()
-    embeddings = embed_batches(client, [c.content for c in chunks])
+    tracker = UsageTracker()
+    embeddings = embed_batches(client, [c.content for c in chunks], tracker)
 
     with psycopg.connect(DB_URL) as conn:
         register_vector(conn)
@@ -100,6 +110,7 @@ def main() -> None:
         store_chunks(conn, chunks, embeddings, doc_ids)
 
     print(f"Stored {len(chunks)} chunks across {len(documents)} documents.")
+    print(f"Voyage usage: {tracker.summary()}")
 
 
 if __name__ == "__main__":

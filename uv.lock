@@ -3,6 +3,11 @@ revision = 3
 requires-python = ">=3.13"
 
 [[package]]
+name = "ai-utils"
+version = "0.1.0"
+source = { git = "https://github.com/hachai-code/ai-utils#bb1f2821d8c93d1d5af9c4ceb19d966d0315bfa6" }
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1155,6 +1160,7 @@ name = "rag-system"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "ai-utils" },
     { name = "beautifulsoup4" },
     { name = "ebooklib" },
     { name = "pgvector" },
@@ -1168,6 +1174,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ai-utils", git = "https://github.com/hachai-code/ai-utils" },
     { name = "beautifulsoup4", specifier = ">=4.15.0" },
     { name = "ebooklib", specifier = ">=0.20" },
     { name = "pgvector", specifier = ">=0.4.2" },
