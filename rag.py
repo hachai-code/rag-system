@@ -4,6 +4,7 @@ This is the query side of the pipeline that ingest -> chunk -> embed built.
 Run `uv run rag.py` to see the top-k chunks for a sample question.
 """
 
+import anthropic
 import psycopg
 import voyageai
 from dotenv import load_dotenv
@@ -16,6 +17,14 @@ DB_URL = "postgresql://postgres:postgres@localhost:5432/rag"
 VOYAGE_MODEL = "voyage-4"
 EMBED_DIM = 1024
 TOP_K = 5
+
+CLAUDE_MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 1024
+SYSTEM_PROMPT = (
+    "You answer questions about the innerdance corpus using only the provided "
+    "context passages. Cite the passages you use by number, like [1]. If the "
+    "context does not contain the answer, say you don't know."
+)
 
 _voyage = voyageai.Client()
 
@@ -45,6 +54,27 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
     ).fetchall()
 
 
+def format_context(hits: list[dict]) -> str:
+    """Number each retrieved chunk so Claude can cite it as [1], [2], ..."""
+    blocks = [f"[{i}] {hit['title']}\n{hit['content']}" for i, hit in enumerate(hits, 1)]
+    return "\n\n".join(blocks)
+
+
+def answer(question: str, hits: list[dict]) -> str:
+    """Stuff the retrieved chunks into the prompt and return Claude's answer."""
+    context = format_context(hits)
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+        ],
+    )
+    return response.content[0].text
+
+
 if __name__ == "__main__":
     question = "What is the relationship between epilepsy and spiritual experience?"
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
@@ -52,7 +82,7 @@ if __name__ == "__main__":
         hits = search(conn, question)
 
     print(f"Q: {question}\n")
+    print(answer(question, hits))
+    print("\nSources:")
     for i, hit in enumerate(hits, 1):
-        preview = " ".join(hit["content"].split())[:90]
-        print(f"{i}. [{hit['distance']:.4f}] {hit['title']}")
-        print(f"   {preview}...\n")
+        print(f"  [{i}] {hit['title'][:60]}")

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "ai-utils",
+    "anthropic>=0.109.1",
     "beautifulsoup4>=4.15.0",
     "ebooklib>=0.20",
     "pgvector>=0.4.2",
