@@ -18,6 +18,12 @@ VOYAGE_MODEL = "voyage-4"
 EMBED_DIM = 1024
 TOP_K = 5
 
+# Reciprocal Rank Fusion: pull this many candidates from each retriever, then
+# fuse. RRF_K (60, the value from the original RRF paper) damps how much a chunk's
+# exact rank matters, so one strong retriever can't dominate on rank alone.
+FUSE_DEPTH = 60
+RRF_K = 60
+
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
 SYSTEM_PROMPT = (
@@ -80,6 +86,27 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
         """,
         {"question": question, "k": k},
     ).fetchall()
+
+
+def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+    """Fuse vector and keyword rankings with Reciprocal Rank Fusion (RRF).
+
+    Each chunk scores sum(1 / (RRF_K + rank)) over the two rankings it appears in,
+    so a chunk ranked high by either retriever rises, and one ranked high by both
+    wins. RRF combines on *rank*, not score, which is why it blends cosine distance
+    and ts_rank — two scales that aren't comparable — without any normalization."""
+    rankings = [
+        search(conn, question, FUSE_DEPTH),
+        keyword_search(conn, question, FUSE_DEPTH),
+    ]
+    scores: dict[int, float] = {}
+    chunks: dict[int, dict] = {}
+    for hits in rankings:
+        for rank, hit in enumerate(hits, 1):
+            scores[hit["id"]] = scores.get(hit["id"], 0.0) + 1 / (RRF_K + rank)
+            chunks[hit["id"]] = hit
+    top_ids = sorted(scores, key=scores.get, reverse=True)[:k]
+    return [chunks[cid] for cid in top_ids]
 
 
 def format_context(hits: list[dict]) -> str:

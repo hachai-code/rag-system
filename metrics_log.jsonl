@@ -4,3 +4,5 @@
 {"timestamp": "2026-06-12T11:57:48", "label": "prefix", "n": 19, "recall_at_5": 1.0, "mrr": 0.793, "tight_n": 9, "tight_recall_at_5": 1.0, "tight_mrr": 0.7815}
 {"timestamp": "2026-06-12T11:58:44", "label": "baseline_kw", "n": 19, "recall_at_5": 0.9474, "mrr": 0.7675, "tight_n": 9, "tight_recall_at_5": 0.8889, "tight_mrr": 0.7222}
 {"timestamp": "2026-06-12T12:00:42", "label": "size256_prefix", "n": 19, "recall_at_5": 1.0, "mrr": 0.857, "tight_n": 10, "tight_recall_at_5": 1.0, "tight_mrr": 0.8533}
+{"timestamp": "2026-06-12T12:21:23", "label": "naive", "n": 19, "recall_at_5": 1.0, "mrr": 0.857, "tight_n": 10, "tight_recall_at_5": 1.0, "tight_mrr": 0.8533}
+{"timestamp": "2026-06-12T12:21:31", "label": "hybrid", "n": 19, "recall_at_5": 0.8947, "mrr": 0.8202, "tight_n": 10, "tight_recall_at_5": 0.8, "tight_mrr": 0.7333}

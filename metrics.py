@@ -19,7 +19,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-from rag import DB_URL, search
+from rag import DB_URL, hybrid_search, search
 
 K = 5
 EVAL_FILE = Path("eval_set.jsonl")
@@ -54,7 +54,10 @@ def aggregate(results: list[tuple[float, float]]) -> tuple[float, float]:
 
 
 def main() -> None:
-    label = sys.argv[1] if len(sys.argv) > 1 else "naive"
+    hybrid = "--hybrid" in sys.argv[1:]
+    retriever = hybrid_search if hybrid else search
+    positional = [a for a in sys.argv[1:] if not a.startswith("-")]
+    label = positional[0] if positional else ("hybrid" if hybrid else "naive")
     rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
     graded = [r for r in rows if r.get("relevance_keywords")]
 
@@ -64,7 +67,7 @@ def main() -> None:
         register_vector(conn)
         for r in graded:
             expected = gold_ids(conn, r["relevance_keywords"])
-            retrieved = [h["id"] for h in search(conn, r["question"])]
+            retrieved = [h["id"] for h in retriever(conn, r["question"])]
             rec, rr = recall_at_k(retrieved, expected), reciprocal_rank(retrieved, expected)
             scored.append((len(expected), rec, rr))
             rank = next((i for i, cid in enumerate(retrieved[:K], 1) if cid in expected), None)
