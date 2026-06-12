@@ -102,11 +102,44 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+# Matches an ASR timecode like "[00:01.000 --> 00:03.500]" or with an hour
+# component "[01:24:49.540 --> 01:24:54.540]".
+TIMECODE = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?\.\d+ --> \d{1,2}:\d{2}(?::\d{2})?\.\d+\]")
+
+
+def is_transcript(text: str) -> bool:
+    """True for the Maia transcripts, which open with a timecode. The EPUB and
+    PDFs don't, so they're left untouched."""
+    return bool(TIMECODE.match(text.lstrip()))
+
+
+def reflow_transcript(text: str) -> str:
+    """Turn timecoded ASR utterances into flowing prose.
+
+    The transcripts arrive as one timecoded fragment per line:
+        [27:16.7 --> 27:23.8]  music might be the most powerful tool
+    The timecodes are ~40% of the tokens and fragment every sentence, which
+    muddies the embeddings. We strip the codes, join the fragments into running
+    text, then split on sentence boundaries so the chunker still has lines to
+    pack.
+    """
+    utterances = []
+    for line in text.splitlines():
+        utterance = TIMECODE.sub("", line).strip()
+        if utterance:
+            utterances.append(utterance)
+    flowing = " ".join(utterances)
+    sentences = re.split(r"(?<=[.!?]) +", flowing)
+    return "\n".join(sentences)
+
+
 # --- loading -----------------------------------------------------------------
 
 
 def load_document(path: Path, root: Path) -> Document:
     raw = EXTRACTORS[path.suffix.lower()](path)
+    if is_transcript(raw):
+        raw = reflow_transcript(raw)
     text = clean_text(raw)
     relative = path.relative_to(root)
     return Document(

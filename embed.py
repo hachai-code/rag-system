@@ -11,6 +11,7 @@ than duplicating them.
 import datetime
 import logging
 import os
+import time
 
 import psycopg
 import voyageai
@@ -29,6 +30,16 @@ VOYAGE_MODEL = "voyage-4"  # same price as 3.5, newer, includes 200M free tokens
 EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/init.sql
 BATCH_SIZE = 128   # texts per request; limits are 1000 texts / 320K tokens
 
+# Transient failures worth retrying. Auth/bad-request errors are excluded —
+# retrying those just wastes time.
+_TRANSIENT_ERRORS = (
+    voyageai.error.ServiceUnavailableError,
+    voyageai.error.ServerError,
+    voyageai.error.APIConnectionError,
+    voyageai.error.Timeout,
+    voyageai.error.RateLimitError,
+)
+
 
 def embed_batches(
     client: voyageai.Client, texts: list[str], tracker: UsageTracker
@@ -38,16 +49,30 @@ def embed_batches(
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), BATCH_SIZE):
         batch = texts[start : start + BATCH_SIZE]
-        result = client.embed(
-            batch,
-            model=VOYAGE_MODEL,
-            input_type="document",
-            output_dimension=EMBED_DIM,
-        )
+        result = _embed_with_retry(client, batch)
         embeddings.extend(result.embeddings)
         tracker.record(VOYAGE_MODEL, result.total_tokens)
         print(f"  embedded {start + len(batch)}/{len(texts)}", flush=True)
     return embeddings
+
+
+def _embed_with_retry(client: voyageai.Client, batch: list[str], attempts: int = 5):
+    """Voyage occasionally returns 503 (overloaded). Back off and retry rather
+    than losing the whole run to a transient blip."""
+    for attempt in range(attempts):
+        try:
+            return client.embed(
+                batch,
+                model=VOYAGE_MODEL,
+                input_type="document",
+                output_dimension=EMBED_DIM,
+            )
+        except _TRANSIENT_ERRORS as exc:
+            if attempt == attempts - 1:
+                raise
+            wait = 2**attempt
+            print(f"  Voyage error ({type(exc).__name__}); retrying in {wait}s ...", flush=True)
+            time.sleep(wait)
 
 
 def upsert_documents(conn: psycopg.Connection, documents: list[Document]) -> dict[str, int]:
