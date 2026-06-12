@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index  INT    NOT NULL,              -- position within the document
     content      TEXT   NOT NULL,
     embedding    VECTOR(1024),                 -- Voyage models (1024 dims)
+    -- Lexical index of content, kept in sync automatically. Powers keyword
+    -- (full-text) search alongside the vector column — the two complement each
+    -- other: vectors catch paraphrase, this catches exact rare terms.
+    content_tsv  TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
     metadata     JSONB  NOT NULL DEFAULT '{}',
     UNIQUE (document_id, chunk_index)
 );
@@ -31,3 +35,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 -- the schema is complete and stays fast as the corpus grows.
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx
     ON chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Inverted index for full-text search (the @@ operator / ts_rank).
+CREATE INDEX IF NOT EXISTS chunks_content_tsv_idx
+    ON chunks USING gin (content_tsv);

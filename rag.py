@@ -54,6 +54,34 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
     ).fetchall()
 
 
+def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+    """Return the k chunks whose text best matches the question's keywords, using
+    Postgres full-text search (ts_rank, a BM25-like lexical score).
+
+    websearch_to_tsquery ANDs every term, which is too strict for a full question
+    (one missing word and nothing matches), so we swap & for | to OR the terms:
+    any overlap counts, and ts_rank then orders by how well/often they match. This
+    is the lexical counterpart to vector `search` — it nails exact rare terms that
+    embeddings blur together, but, being exact-lexeme, it can't see past typos."""
+    return conn.execute(
+        """
+        WITH q AS (
+            SELECT replace(
+                websearch_to_tsquery('english', %(question)s)::text, '&', '|'
+            )::tsquery AS tsq
+        )
+        SELECT c.id, d.title, d.source, c.content,
+               ts_rank(c.content_tsv, q.tsq) AS rank
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id, q
+        WHERE c.content_tsv @@ q.tsq
+        ORDER BY rank DESC
+        LIMIT %(k)s
+        """,
+        {"question": question, "k": k},
+    ).fetchall()
+
+
 def format_context(hits: list[dict]) -> str:
     """Number each retrieved chunk so Claude can cite it as [1], [2], ..."""
     blocks = [f"[{i}] {hit['title']}\n{hit['content']}" for i, hit in enumerate(hits, 1)]
