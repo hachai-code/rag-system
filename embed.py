@@ -127,7 +127,11 @@ def main() -> None:
 
     client = voyageai.Client()
     tracker = UsageTracker()
-    embeddings = embed_batches(client, [c.content for c in chunks], tracker)
+    # Contextual prefix (section + title) prepended to each chunk's *embedded*
+    # text — measurably improves retrieval (see chunking-experiments.md). The
+    # stored content stays raw; only the vector sees the prefix.
+    texts = [f"{c.section} — {c.title[:60]}\n\n{c.content}" for c in chunks]
+    embeddings = embed_batches(client, texts, tracker)
 
     with psycopg.connect(DB_URL) as conn:
         register_vector(conn)

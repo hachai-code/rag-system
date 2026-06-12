@@ -39,33 +39,54 @@ def reciprocal_rank(retrieved: list[int], expected: set[int], k: int = K) -> flo
     return 0.0
 
 
+def gold_ids(conn: psycopg.Connection, keywords: list[str]) -> set[int]:
+    """Chunks (in the CURRENT db) whose content contains all keywords. Recomputed
+    each run so the gold set tracks re-embeds/re-chunks instead of frozen IDs."""
+    where = " AND ".join(["content ILIKE %s"] * len(keywords))
+    sql = f"SELECT id FROM chunks WHERE {where}"
+    return {row["id"] for row in conn.execute(sql, [f"%{k}%" for k in keywords]).fetchall()}
+
+
+def aggregate(results: list[tuple[float, float]]) -> tuple[float, float]:
+    recall = sum(rec for rec, _ in results) / len(results)
+    mrr = sum(rr for _, rr in results) / len(results)
+    return recall, mrr
+
+
 def main() -> None:
     label = sys.argv[1] if len(sys.argv) > 1 else "naive"
     rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
-    graded = [r for r in rows if r.get("expected_chunk_ids")]
+    graded = [r for r in rows if r.get("relevance_keywords")]
 
-    recalls, rrs = [], []
     print(f"{'id':>3}  {'category':<11} {'gold':>4} {'hit':>3} {'rank':>4}")
+    scored = []  # (gold_count, recall, rr)
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
         register_vector(conn)
         for r in graded:
+            expected = gold_ids(conn, r["relevance_keywords"])
             retrieved = [h["id"] for h in search(conn, r["question"])]
-            expected = set(r["expected_chunk_ids"])
-            recalls.append(recall_at_k(retrieved, expected))
-            rrs.append(reciprocal_rank(retrieved, expected))
+            rec, rr = recall_at_k(retrieved, expected), reciprocal_rank(retrieved, expected)
+            scored.append((len(expected), rec, rr))
             rank = next((i for i, cid in enumerate(retrieved[:K], 1) if cid in expected), None)
-            print(f"{r['id']:>3}  {r['category']:<11} {len(expected):>4} {'Y' if recalls[-1] else '.':>3} {rank or '-':>4}")
+            print(f"{r['id']:>3}  {r['category']:<11} {len(expected):>4} {'Y' if rec else '.':>3} {rank or '-':>4}")
 
-    recall = sum(recalls) / len(recalls)
-    mrr = sum(rrs) / len(rrs)
-    print(f"\n{label} RAG (n={len(graded)}):  recall@{K} = {recall:.2f}   MRR = {mrr:.2f}")
+    # Tight gold (<=6 specific chunks) is the discriminating subset; the full set
+    # is inflated by broad keyword-labeled gold.
+    full = [(rec, rr) for _, rec, rr in scored]
+    tight = [(rec, rr) for gold_count, rec, rr in scored if gold_count <= 6]
+    recall, mrr = aggregate(full)
+    t_recall, t_mrr = aggregate(tight)
+
+    print(f"\n{label}:")
+    print(f"  all graded (n={len(full)}):   recall@{K} = {recall:.2f}   MRR = {mrr:.2f}")
+    print(f"  tight gold (n={len(tight)}):   recall@{K} = {t_recall:.2f}   MRR = {t_mrr:.2f}")
 
     record = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
-        "label": label,
-        "n": len(graded),
-        "recall_at_5": round(recall, 4),
-        "mrr": round(mrr, 4),
+        "label": label, "n": len(full),
+        "recall_at_5": round(recall, 4), "mrr": round(mrr, 4),
+        "tight_n": len(tight),
+        "tight_recall_at_5": round(t_recall, 4), "tight_mrr": round(t_mrr, 4),
     }
     with LOG_FILE.open("a") as f:
         f.write(json.dumps(record) + "\n")

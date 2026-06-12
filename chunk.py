@@ -12,11 +12,12 @@ a line is one paragraph. We never split within a line, so chunk boundaries fall
 between whole lines rather than mid-word.
 """
 
+import os
 from dataclasses import dataclass
 
 from ingest import Document, count_tokens, load_corpus, CORPUS_ROOT
 
-CHUNK_SIZE = 512    # target tokens per chunk
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "256"))  # 256 won the size sweep (chunking-experiments.md)
 CHUNK_OVERLAP = 50  # tokens carried from the end of one chunk into the next
 
 
