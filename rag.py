@@ -24,6 +24,13 @@ TOP_K = 5
 FUSE_DEPTH = 60
 RRF_K = 60
 
+# Vector is the stronger retriever on this corpus, so keyword is down-weighted: it
+# can still rescue queries vector misses, but can't displace a chunk vector ranked
+# confidently. 0.5 won a weight sweep — recall@5 0.79 vs 0.74 for both pure vector
+# and equal-weight fusion (see metrics_log.jsonl).
+VECTOR_WEIGHT = 1.0
+KEYWORD_WEIGHT = 0.5
+
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
 SYSTEM_PROMPT = (
@@ -89,21 +96,22 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
 
 
 def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
-    """Fuse vector and keyword rankings with Reciprocal Rank Fusion (RRF).
+    """Fuse vector and keyword rankings with weighted Reciprocal Rank Fusion (RRF).
 
-    Each chunk scores sum(1 / (RRF_K + rank)) over the two rankings it appears in,
-    so a chunk ranked high by either retriever rises, and one ranked high by both
-    wins. RRF combines on *rank*, not score, which is why it blends cosine distance
-    and ts_rank — two scales that aren't comparable — without any normalization."""
+    Each chunk scores sum(weight / (RRF_K + rank)) over the two rankings it appears
+    in, so a chunk ranked high by either retriever rises, and one ranked high by
+    both wins. RRF combines on *rank*, not score, which is why it blends cosine
+    distance and ts_rank — two scales that aren't comparable — without normalizing.
+    Keyword is down-weighted (see KEYWORD_WEIGHT) because it's the noisier signal."""
     rankings = [
-        search(conn, question, FUSE_DEPTH),
-        keyword_search(conn, question, FUSE_DEPTH),
+        (VECTOR_WEIGHT, search(conn, question, FUSE_DEPTH)),
+        (KEYWORD_WEIGHT, keyword_search(conn, question, FUSE_DEPTH)),
     ]
     scores: dict[int, float] = {}
     chunks: dict[int, dict] = {}
-    for hits in rankings:
+    for weight, hits in rankings:
         for rank, hit in enumerate(hits, 1):
-            scores[hit["id"]] = scores.get(hit["id"], 0.0) + 1 / (RRF_K + rank)
+            scores[hit["id"]] = scores.get(hit["id"], 0.0) + weight / (RRF_K + rank)
             chunks[hit["id"]] = hit
     top_ids = sorted(scores, key=scores.get, reverse=True)[:k]
     return [chunks[cid] for cid in top_ids]
