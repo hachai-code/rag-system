@@ -43,7 +43,7 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
     embedding = embed_query(question)
     return conn.execute(
         """
-        SELECT d.title, d.source, c.content,
+        SELECT c.id, d.title, d.source, c.content,
                c.embedding <=> %(emb)s::vector AS distance
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
