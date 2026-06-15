@@ -4,6 +4,8 @@ This is the query side of the pipeline that ingest -> chunk -> embed built.
 Run `uv run rag.py` to see the top-k chunks for a sample question.
 """
 
+import os
+
 import anthropic
 import psycopg
 import voyageai
@@ -13,7 +15,8 @@ from psycopg.rows import dict_row
 
 load_dotenv()
 
-DB_URL = "postgresql://postgres:postgres@localhost:5432/rag"
+# Local docker default; set DATABASE_URL to point the app/pipeline at a remote DB.
+DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rag")
 VOYAGE_MODEL = "voyage-4"
 EMBED_DIM = 1024
 TOP_K = 5

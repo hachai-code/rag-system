@@ -22,10 +22,10 @@ from psycopg.types.json import Jsonb
 
 from chunk import Chunk, chunk_corpus
 from ingest import CORPUS_ROOT, Document, load_corpus
+from rag import DB_URL  # local default, or DATABASE_URL if set
 
 load_dotenv()
 
-DB_URL = "postgresql://postgres:postgres@localhost:5432/rag"
 VOYAGE_MODEL = "voyage-4"  # same price as 3.5, newer, includes 200M free tokens
 EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/init.sql
 BATCH_SIZE = 128   # texts per request; limits are 1000 texts / 320K tokens
