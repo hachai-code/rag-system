@@ -31,6 +31,11 @@ RRF_K = 60
 VECTOR_WEIGHT = 1.0
 KEYWORD_WEIGHT = 0.5
 
+# Reranking: pull this many candidates from hybrid search, then a cross-encoder
+# re-scores each (query, chunk) pair and we keep the top TOP_K.
+RERANK_MODEL = "rerank-2.5"
+RERANK_DEPTH = 20
+
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
 SYSTEM_PROMPT = (
@@ -115,6 +120,22 @@ def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
             chunks[hit["id"]] = hit
     top_ids = sorted(scores, key=scores.get, reverse=True)[:k]
     return [chunks[cid] for cid in top_ids]
+
+
+def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+    """Three-stage retrieval: hybrid retrieve RERANK_DEPTH candidates, rerank, keep k.
+
+    Vector and keyword search score the question and a chunk *independently*, so a
+    chunk only has to land near the question to rank well. A cross-encoder reads the
+    (question, chunk) pair together and judges how well the chunk actually answers
+    the question — a sharper signal that rescues near-misses the first stage
+    over-ranks. It's too slow to run over the whole corpus, so it only re-scores the
+    RERANK_DEPTH candidates hybrid search already narrowed to."""
+    candidates = hybrid_search(conn, question, RERANK_DEPTH)
+    reranked = _voyage.rerank(
+        question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
+    )
+    return [candidates[r.index] for r in reranked.results]
 
 
 def format_context(hits: list[dict]) -> str:
