@@ -26,8 +26,17 @@ class Source(BaseModel):
     distance: float
 
 
+class Citation(BaseModel):
+    claim: str  # the span of the answer this citation backs
+    cited_text: str  # the exact source quote, extracted by the API
+    chunk_id: int
+    title: str
+    source: str
+
+
 class AskResponse(BaseModel):
     answer: str
+    citations: list[Citation]
     sources: list[Source]
 
 
@@ -38,8 +47,10 @@ def ask(request: AskRequest) -> AskResponse:
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
         register_vector(conn)
         hits = search(conn, request.question)
+    text, citations = answer(request.question, hits)
     return AskResponse(
-        answer=answer(request.question, hits),
+        answer=text,
+        citations=[Citation(**c) for c in citations],
         sources=[
             Source(title=h["title"], source=h["source"], distance=h["distance"])
             for h in hits

@@ -38,10 +38,11 @@ RERANK_DEPTH = 20
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
+# No citation instructions here: the Citations feature handles attribution itself,
+# returning the exact source quote for each claim, so we only ask for grounding.
 SYSTEM_PROMPT = (
     "You answer questions about the innerdance corpus using only the provided "
-    "context passages. Cite the passages you use by number, like [1]. If the "
-    "context does not contain the answer, say you don't know."
+    "documents. If the documents do not contain the answer, say you don't know."
 )
 
 _voyage = voyageai.Client()
@@ -138,35 +139,75 @@ def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
     return [candidates[r.index] for r in reranked.results]
 
 
-def format_context(hits: list[dict]) -> str:
-    """Number each retrieved chunk so Claude can cite it as [1], [2], ..."""
-    blocks = [f"[{i}] {hit['title']}\n{hit['content']}" for i, hit in enumerate(hits, 1)]
-    return "\n\n".join(blocks)
+def context_documents(hits: list[dict]) -> list[dict]:
+    """Turn each retrieved chunk into a citable document content block.
+
+    Passing chunks as separate documents (rather than one stuffed prompt) is what
+    lets the Citations feature attribute claims: each document's `document_index`
+    in a returned citation maps straight back to hits[index]."""
+    return [
+        {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain", "data": hit["content"]},
+            "title": hit["title"],
+            "citations": {"enabled": True},
+        }
+        for hit in hits
+    ]
 
 
-def answer(question: str, hits: list[dict]) -> str:
-    """Stuff the retrieved chunks into the prompt and return Claude's answer."""
-    context = format_context(hits)
+def answer(question: str, hits: list[dict]) -> tuple[str, list[dict]]:
+    """Ask Claude over the retrieved chunks and return (answer_text, citations).
+
+    With citations enabled the response is a sequence of text blocks; a block that
+    makes a claim carries a `.citations` list, each pointing at the exact source
+    text. We flatten the blocks into the answer string and collect one record per
+    citation, tying each cited claim back to the chunk it came from so the frontend
+    can link it. `cited_text` is extracted by the API from the document, so it can't
+    be a quote the source doesn't contain."""
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         messages=[
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+            {
+                "role": "user",
+                "content": context_documents(hits)
+                + [{"type": "text", "text": f"Question: {question}"}],
+            }
         ],
     )
-    return response.content[0].text
+    text = "".join(block.text for block in response.content)
+    citations = [
+        {
+            "claim": block.text,
+            "cited_text": c.cited_text,
+            "chunk_id": hits[c.document_index]["id"],
+            "title": hits[c.document_index]["title"],
+            "source": hits[c.document_index]["source"],
+        }
+        for block in response.content
+        for c in (block.citations or [])
+    ]
+    return text, citations
 
 
 if __name__ == "__main__":
     question = "What is the relationship between epilepsy and spiritual experience?"
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
         register_vector(conn)
-        hits = search(conn, question)
+        hits = rerank_search(conn, question)
 
+    text, citations = answer(question, hits)
     print(f"Q: {question}\n")
-    print(answer(question, hits))
-    print("\nSources:")
-    for i, hit in enumerate(hits, 1):
-        print(f"  [{i}] {hit['title'][:60]}")
+    print(text)
+
+    by_id = {hit["id"]: hit["content"] for hit in hits}
+    print(f"\nCitations ({len(citations)}):")
+    for cite in citations:
+        # Groundedness check: the API extracts cited_text from the chunk, so this
+        # should always hold — if it ever fails, the citation is not real.
+        grounded = cite["cited_text"] in by_id[cite["chunk_id"]]
+        mark = "ok" if grounded else "HALLUCINATED"
+        print(f"  [{mark}] {cite['title'][:40]} — \"{cite['cited_text'][:70]}\"")
