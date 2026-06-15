@@ -15,7 +15,7 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from pydantic import BaseModel
 
-from rag import DB_URL, answer, answer_stream, search
+from rag import DB_URL, answer, answer_stream, search, source_passage
 
 app = FastAPI(title="innerdance RAG")
 
@@ -52,6 +52,16 @@ class AskResponse(BaseModel):
     sources: list[Source]
 
 
+class SourcePassage(BaseModel):
+    title: str
+    section: str
+    chunk_index: int
+    n_chunks: int
+    before: str  # context preceding the cited chunk
+    chunk: str  # the retrieved chunk, to highlight
+    after: str  # context following the cited chunk
+
+
 # Sync `def` (not async): the Voyage/Claude/psycopg calls block, so FastAPI runs
 # this in a threadpool instead of stalling the event loop.
 @app.post("/ask")
@@ -83,3 +93,11 @@ def ask_stream(request: AskRequest) -> StreamingResponse:
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+# Click-through to source: the chunk a citation points at, reconstructed in its
+# place in the document so the frontend can highlight it in context.
+@app.get("/source/{chunk_id}")
+def source(chunk_id: int) -> SourcePassage:
+    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+        return SourcePassage(**source_passage(conn, chunk_id))

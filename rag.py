@@ -36,6 +36,10 @@ KEYWORD_WEIGHT = 0.5
 RERANK_MODEL = "rerank-2.5"
 RERANK_DEPTH = 20
 
+# Click-through to source: how many chunks of surrounding context to show on each
+# side of a cited chunk when reconstructing its place in the document.
+SOURCE_WINDOW = 3
+
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
 # No citation instructions here: the Citations feature handles attribution itself,
@@ -218,6 +222,76 @@ def answer_stream(question: str, hits: list[dict]):
         final = stream.get_final_message()
     for cite in _citations(final.content, hits):
         yield {"type": "citation", **cite}
+
+
+def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:
+    """How many trailing lines of prefix_lines equal the leading lines of next_lines.
+
+    Adjacent chunks share a CHUNK_OVERLAP-sized run of whole lines (see chunk.py),
+    so this is how many lines to drop from next_lines to avoid repeating them."""
+    for k in range(min(len(prefix_lines), len(next_lines)), 0, -1):
+        if prefix_lines[-k:] == next_lines[:k]:
+            return k
+    return 0
+
+
+def _stitch(rows: list[dict], target_index: int) -> tuple[str, str, str]:
+    """Join consecutive chunks into (before, chunk, after), dropping overlap.
+
+    The target chunk is kept whole so a citation's quote is always findable inside
+    `chunk`; the duplicated boundary lines are trimmed from the neighbours instead."""
+    before: list[str] = []
+    chunk: list[str] = []
+    after: list[str] = []
+    for row in rows:
+        lines = row["content"].split("\n")
+        if row["chunk_index"] < target_index:
+            before.extend(lines[_overlap(before, lines):])
+        elif row["chunk_index"] == target_index:
+            chunk = lines
+            del before[len(before) - _overlap(before, lines):]  # trim before's tail
+        else:
+            after.extend(lines[_overlap(chunk + after, lines):])
+    return "\n".join(before), "\n".join(chunk), "\n".join(after)
+
+
+def source_passage(conn: psycopg.Connection, chunk_id: int, window: int = SOURCE_WINDOW) -> dict:
+    """Reconstruct where a cited chunk sits in its document, for click-through.
+
+    Returns the chunk stitched back together with `window` chunks of context on each
+    side, plus the document title and the chunk's section (its nearest heading, or
+    the document's section if the chunk has none) and position. The frontend shows
+    `before`/`after` as muted context and highlights `chunk`."""
+    target = conn.execute(
+        "SELECT document_id, chunk_index FROM chunks WHERE id = %s", (chunk_id,)
+    ).fetchone()
+    doc = conn.execute(
+        "SELECT title, section FROM documents WHERE id = %s", (target["document_id"],)
+    ).fetchone()
+    n_chunks = conn.execute(
+        "SELECT count(*) AS n FROM chunks WHERE document_id = %s", (target["document_id"],)
+    ).fetchone()["n"]
+    rows = conn.execute(
+        """SELECT chunk_index, content, metadata->>'heading' AS heading
+           FROM chunks
+           WHERE document_id = %s AND chunk_index BETWEEN %s AND %s
+           ORDER BY chunk_index""",
+        (target["document_id"], target["chunk_index"] - window, target["chunk_index"] + window),
+    ).fetchall()
+
+    before, chunk, after = _stitch(rows, target["chunk_index"])
+    heading = next(
+        (r["heading"] for r in rows if r["chunk_index"] == target["chunk_index"]), None
+    )
+    return {
+        "title": doc["title"],
+        "section": heading or doc["section"],
+        "chunk_index": target["chunk_index"],
+        "n_chunks": n_chunks,
+        "before": before,
+        "chunk": chunk,
+        "after": after,
+    }
 
 
 if __name__ == "__main__":

@@ -26,3 +26,14 @@ export interface AskResponse {
 export type StreamEvent =
   | { type: "text"; text: string }
   | ({ type: "citation" } & Citation);
+
+// Returned by GET /source/{chunk_id}: the cited chunk in its document context.
+export interface SourcePassage {
+  title: string;
+  section: string;
+  chunk_index: number;
+  n_chunks: number;
+  before: string; // context preceding the cited chunk
+  chunk: string; // the retrieved chunk, to highlight
+  after: string; // context following the cited chunk
+}

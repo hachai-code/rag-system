@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Citation, StreamEvent } from "@/lib/types";
+import type { Citation, SourcePassage, StreamEvent } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -10,6 +10,7 @@ export default function Home() {
   const [answer, setAnswer] = useState("");
   const [citations, setCitations] = useState<Citation[]>([]);
   const [openChip, setOpenChip] = useState<number | null>(null);
+  const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function ask(e: React.FormEvent) {
@@ -18,6 +19,7 @@ export default function Home() {
     setAnswer("");
     setCitations([]);
     setOpenChip(null);
+    setSource(null);
     setLoading(true);
 
     const res = await fetch(`${API_URL}/ask/stream`, {
@@ -53,6 +55,19 @@ export default function Home() {
     setLoading(false);
   }
 
+  // Open a citation: fetch the chunk's place in its document and show it. Clicking
+  // the open chip again closes the panel.
+  async function openSource(i: number, chunkId: number) {
+    if (openChip === i) {
+      setOpenChip(null);
+      return;
+    }
+    setOpenChip(i);
+    setSource(null);
+    const res = await fetch(`${API_URL}/source/${chunkId}`);
+    setSource(await res.json());
+  }
+
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
       <h1 className="mb-6 text-2xl font-semibold">innerdance RAG</h1>
@@ -84,23 +99,59 @@ export default function Home() {
             {citations.map((c, i) => (
               <button
                 key={i}
-                onClick={() => setOpenChip(openChip === i ? null : i)}
-                className="rounded-full border border-gray-300 px-3 py-1 text-sm hover:bg-gray-100"
+                onClick={() => openSource(i, c.chunk_id)}
+                className={`rounded-full border px-3 py-1 text-sm hover:bg-gray-100 ${
+                  openChip === i ? "border-black bg-gray-100" : "border-gray-300"
+                }`}
               >
                 [{i + 1}] {c.title}
               </button>
             ))}
           </div>
+
           {openChip !== null && (
-            <blockquote className="mt-3 border-l-2 border-gray-300 pl-3 text-sm text-gray-600">
-              “{citations[openChip].cited_text}”
-              <div className="mt-1 text-xs text-gray-400">
-                {citations[openChip].source}
-              </div>
-            </blockquote>
+            <div className="mt-4 rounded border border-gray-300 p-4">
+              {source === null ? (
+                <p className="text-sm text-gray-400">Loading source…</p>
+              ) : (
+                <>
+                  <div className="mb-3">
+                    <div className="font-medium">{source.title}</div>
+                    <div className="text-xs text-gray-500">
+                      {source.section} · passage {source.chunk_index + 1} of{" "}
+                      {source.n_chunks}
+                    </div>
+                  </div>
+                  <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+                    <span className="text-gray-400">{source.before}</span>
+                    {source.before && "\n"}
+                    <Highlight
+                      chunk={source.chunk}
+                      cited={citations[openChip].cited_text}
+                    />
+                    {source.after && "\n"}
+                    <span className="text-gray-400">{source.after}</span>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </section>
       )}
     </main>
+  );
+}
+
+// The retrieved chunk, highlighted within its document; the exact cited sentence
+// is highlighted more strongly inside it.
+function Highlight({ chunk, cited }: { chunk: string; cited: string }) {
+  const at = chunk.indexOf(cited);
+  if (at === -1) return <mark className="bg-yellow-100">{chunk}</mark>;
+  return (
+    <mark className="bg-yellow-100">
+      {chunk.slice(0, at)}
+      <mark className="bg-yellow-300 font-medium">{cited}</mark>
+      {chunk.slice(at + cited.length)}
+    </mark>
   );
 }
