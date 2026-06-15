@@ -156,30 +156,25 @@ def context_documents(hits: list[dict]) -> list[dict]:
     ]
 
 
-def answer(question: str, hits: list[dict]) -> tuple[str, list[dict]]:
-    """Ask Claude over the retrieved chunks and return (answer_text, citations).
+def _messages(question: str, hits: list[dict]) -> list[dict]:
+    """The user turn: the retrieved chunks as citable documents, then the question."""
+    return [
+        {
+            "role": "user",
+            "content": context_documents(hits)
+            + [{"type": "text", "text": f"Question: {question}"}],
+        }
+    ]
+
+
+def _citations(content: list, hits: list[dict]) -> list[dict]:
+    """Collect one record per citation, tying each cited claim back to its chunk.
 
     With citations enabled the response is a sequence of text blocks; a block that
-    makes a claim carries a `.citations` list, each pointing at the exact source
-    text. We flatten the blocks into the answer string and collect one record per
-    citation, tying each cited claim back to the chunk it came from so the frontend
-    can link it. `cited_text` is extracted by the API from the document, so it can't
-    be a quote the source doesn't contain."""
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": context_documents(hits)
-                + [{"type": "text", "text": f"Question: {question}"}],
-            }
-        ],
-    )
-    text = "".join(block.text for block in response.content)
-    citations = [
+    makes a claim carries a `.citations` list pointing at the exact source text.
+    `cited_text` is extracted by the API from the document, so it can't be a quote
+    the source doesn't contain."""
+    return [
         {
             "claim": block.text,
             "cited_text": c.cited_text,
@@ -187,10 +182,42 @@ def answer(question: str, hits: list[dict]) -> tuple[str, list[dict]]:
             "title": hits[c.document_index]["title"],
             "source": hits[c.document_index]["source"],
         }
-        for block in response.content
+        for block in content
         for c in (block.citations or [])
     ]
-    return text, citations
+
+
+def answer(question: str, hits: list[dict]) -> tuple[str, list[dict]]:
+    """Ask Claude over the retrieved chunks and return (answer_text, citations)."""
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=_messages(question, hits),
+    )
+    text = "".join(block.text for block in response.content)
+    return text, _citations(response.content, hits)
+
+
+def answer_stream(question: str, hits: list[dict]):
+    """Yield the answer incrementally, then one citation record per source.
+
+    Text streams token by token for a live UI. Citations are only final once their
+    text block closes, so we read them from the completed message after the text is
+    done — each yielded as {"type": "text"|"citation", ...}."""
+    client = anthropic.Anthropic()
+    with client.messages.stream(
+        model=CLAUDE_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=_messages(question, hits),
+    ) as stream:
+        for text in stream.text_stream:
+            yield {"type": "text", "text": text}
+        final = stream.get_final_message()
+    for cite in _citations(final.content, hits):
+        yield {"type": "citation", **cite}
 
 
 if __name__ == "__main__":

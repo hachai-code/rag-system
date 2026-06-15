@@ -5,15 +5,27 @@ Then: curl -X POST localhost:8000/ask -H 'content-type: application/json' \
         -d '{"question": "..."}'
 """
 
+import json
+
 import psycopg
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from pydantic import BaseModel
 
-from rag import DB_URL, answer, search
+from rag import DB_URL, answer, answer_stream, search
 
 app = FastAPI(title="innerdance RAG")
+
+# The Next.js dev server runs on a different origin, so the browser needs CORS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class AskRequest(BaseModel):
@@ -56,3 +68,18 @@ def ask(request: AskRequest) -> AskResponse:
             for h in hits
         ],
     )
+
+
+# Server-Sent Events: the answer streams in as `text` events, then one `citation`
+# event per source once the message completes. The frontend reads these live.
+@app.post("/ask/stream")
+def ask_stream(request: AskRequest) -> StreamingResponse:
+    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+        register_vector(conn)
+        hits = search(conn, request.question)
+
+    def events():
+        for event in answer_stream(request.question, hits):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
