@@ -5,6 +5,7 @@ Run `uv run rag.py` to see the top-k chunks for a sample question.
 """
 
 import os
+from functools import lru_cache
 
 import anthropic
 import psycopg
@@ -20,6 +21,16 @@ DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhos
 VOYAGE_MODEL = "voyage-4"
 EMBED_DIM = 1024
 TOP_K = 5
+
+# "No relevant results" gate: if even the nearest chunk is farther than this cosine
+# distance, the corpus almost certainly doesn't cover the question, so the endpoint
+# refuses ("I don't have information on that") instead of asking Claude — this both
+# avoids hallucination and skips the generation cost on off-topic queries. Grounded
+# in observed top-1 distances: on-topic ~0.40, a recoverable typo'd query reached
+# 0.63, a genuine no-answer was 0.94 (see failure-analysis.md). 0.7 sits above the
+# recoverable band and below clear off-topic; retune against eval_set if the corpus
+# or embedding model changes.
+RELEVANCE_THRESHOLD = 0.7
 
 # Reciprocal Rank Fusion: pull this many candidates from each retriever, then
 # fuse. RRF_K (60, the value from the original RRF paper) damps how much a chunk's
@@ -44,6 +55,11 @@ RERANK_DEPTH = 20
 SOURCE_WINDOW = 3
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
+# Per-query cost is bounded on every axis: the question length is capped at the API
+# boundary (see app.py), retrieval sends a fixed TOP_K chunks as context, and
+# MAX_TOKENS caps the generated output. So the worst-case spend per /ask is a known
+# ceiling, not open-ended — and RELEVANCE_THRESHOLD skips this call entirely when
+# nothing relevant was retrieved.
 MAX_TOKENS = 1024
 # No citation instructions here: the Citations feature handles attribution itself,
 # returning the exact source quote for each claim, so we only ask for grounding.
@@ -55,6 +71,10 @@ SYSTEM_PROMPT = (
 _voyage = voyageai.Client()
 
 
+# Cache repeated queries: embeddings are deterministic for a given input, so an
+# identical question never needs a second Voyage call — saves the embedding cost and
+# its latency on repeats. The cached list is never mutated (it only feeds the SQL).
+@lru_cache(maxsize=256)
 def embed_query(question: str) -> list[float]:
     """Embed the question. input_type='query' is the search-side counterpart to
     the 'document' embeddings we stored — Voyage tunes the two differently."""
