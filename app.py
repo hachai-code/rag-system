@@ -6,6 +6,7 @@ Then: curl -X POST localhost:8000/ask -H 'content-type: application/json' \
 """
 
 import json
+import os
 
 import psycopg
 from fastapi import FastAPI
@@ -19,10 +20,12 @@ from rag import DB_URL, answer, answer_stream, search, source_passage
 
 app = FastAPI(title="innerdance RAG")
 
-# The Next.js dev server runs on a different origin, so the browser needs CORS.
+# The frontend runs on a different origin, so the browser needs CORS. Defaults to
+# the local dev server; set FRONTEND_ORIGIN (comma-separated for more than one) to
+# the deployed frontend URL in production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
