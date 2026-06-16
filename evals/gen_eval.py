@@ -5,7 +5,7 @@ results back as `draft_answer` and `top_sources`. Re-runnable; overwrites the
 draft fields. These drafts are a starting point for a human to correct — they
 come from the system under test, so they are NOT ground truth.
 
-Run: uv run gen_eval.py
+Run: uv run python -m evals.gen_eval
 """
 
 import json
@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL, answer, search
 
-EVAL_FILE = Path("eval_set.jsonl")
+EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
 
 
 def main() -> None:

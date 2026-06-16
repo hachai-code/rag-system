@@ -7,9 +7,9 @@ the browser (localStorage) so you can grade in one sitting without losing work.
 
 Reuses the stored `draft_answer` (the RAG answer from gen_eval.py) and re-runs
 search() to show the chunks it was based on — retrieval is deterministic, so the
-chunks match the answer. Open grade.html in a browser afterwards.
+chunks match the answer. Open evals/grade.html in a browser afterwards.
 
-Run: uv run grade.py
+Run: uv run python -m evals.grade
 """
 
 import html
@@ -22,8 +22,8 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL, search
 
-EVAL_FILE = Path("eval_set.jsonl")
-OUT_FILE = Path("grade.html")
+EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
+OUT_FILE = Path(__file__).parent / "grade.html"
 GRADES = ["correct", "partial", "wrong", "hallucinated"]
 
 CSS = """

@@ -27,9 +27,9 @@ TOP_K = 5
 # refuses ("I don't have information on that") instead of asking Claude — this both
 # avoids hallucination and skips the generation cost on off-topic queries. Grounded
 # in observed top-1 distances: on-topic ~0.40, a recoverable typo'd query reached
-# 0.63, a genuine no-answer was 0.94 (see failure-analysis.md). 0.7 sits above the
-# recoverable band and below clear off-topic; retune against eval_set if the corpus
-# or embedding model changes.
+# 0.63, a genuine no-answer was 0.94 (see evals/failure-analysis.md). 0.7 sits above
+# the recoverable band and below clear off-topic; retune against evals/eval_set.jsonl
+# if the corpus or embedding model changes.
 RELEVANCE_THRESHOLD = 0.7
 
 # Reciprocal Rank Fusion: pull this many candidates from each retriever, then
@@ -41,7 +41,7 @@ RRF_K = 60
 # Vector is the stronger retriever on this corpus, so keyword is down-weighted: it
 # can still rescue queries vector misses, but can't displace a chunk vector ranked
 # confidently. 0.5 won a weight sweep — recall@5 0.79 vs 0.74 for both pure vector
-# and equal-weight fusion (see metrics_log.jsonl).
+# and equal-weight fusion (see evals/metrics_log.jsonl).
 VECTOR_WEIGHT = 1.0
 KEYWORD_WEIGHT = 0.5
 

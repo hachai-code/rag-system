@@ -7,7 +7,7 @@ Gold labels are eval_set.jsonl's `expected_chunk_ids`; questions without any are
 skipped (no-answer / unlabeled). Each run is appended to metrics_log.jsonl so you
 can watch the number move as you improve retrieval.
 
-Run: uv run metrics.py [label]
+Run: uv run python -m evals.metrics [label]
 """
 
 import datetime
@@ -22,8 +22,8 @@ from psycopg.rows import dict_row
 from rag import DB_URL, hybrid_search, rerank_search, search
 
 K = 5
-EVAL_FILE = Path("eval_set.jsonl")
-LOG_FILE = Path("metrics_log.jsonl")
+EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
+LOG_FILE = Path(__file__).parent / "metrics_log.jsonl"
 
 
 def recall_at_k(retrieved: list[int], expected: set[int], k: int = K) -> float:

@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # rag.py builds a Voyage client at import, so importing the modules under test
+      # needs these set. The Level-1 tests never call out, so dummy values are fine —
+      # and keep CI free of real secrets and external services.
+      VOYAGE_API_KEY: test
+      ANTHROPIC_API_KEY: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run pytest
