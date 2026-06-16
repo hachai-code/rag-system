@@ -18,6 +18,8 @@ dependencies = [
     "striprtf>=0.0.32",
     "tiktoken>=0.13.0",
     "voyageai>=0.4.0",
+    "langfuse>=4.9.0",
+    "opentelemetry-instrumentation-anthropic>=0.61.0",
 ]
 
 [dependency-groups]

@@ -13,6 +13,8 @@ import psycopg
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langfuse import get_client
+from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -57,6 +59,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Tracing: with the LANGFUSE_* keys set, each /ask is one Langfuse trace — the
+# retrieved chunks as metadata, plus the Claude call, which the Anthropic
+# instrumentor captures automatically (model, prompt, output, token usage). Without
+# keys, get_client() returns a disabled client and the spans below become no-ops, so
+# the app (and the tests that import it) run unchanged. The server is long-lived, so
+# we don't flush per request — the SDK batches in the background and flushes at exit.
+if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+    AnthropicInstrumentor().instrument()
+langfuse = get_client()
+
 
 class AskRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
@@ -97,26 +109,41 @@ def _no_relevant_hits(hits: list[dict]) -> bool:
     return not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD
 
 
+def _retrieved_meta(hits: list[dict]) -> list[dict]:
+    """Compact summary of what retrieval returned, for the trace — the full chunk
+    text would bloat every span, so we keep just id, title, and distance."""
+    return [
+        {"id": h["id"], "title": h["title"], "distance": round(h["distance"], 4)}
+        for h in hits
+    ]
+
+
 # Sync `def` (not async): the Voyage/Claude/psycopg calls block, so FastAPI runs
 # this in a threadpool instead of stalling the event loop. `request: Request` is
 # unused by the body but required for slowapi to read the client IP.
 @app.post("/ask")
 @limiter.limit(RATE_LIMIT)
 def ask(request: Request, body: AskRequest) -> AskResponse:
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
-        hits = search(conn, body.question)
-    if _no_relevant_hits(hits):
-        return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-    text, citations = answer(body.question, hits)
-    return AskResponse(
-        answer=text,
-        citations=[Citation(**c) for c in citations],
-        sources=[
-            Source(title=h["title"], source=h["source"], distance=h["distance"])
-            for h in hits
-        ],
-    )
+    with langfuse.start_as_current_observation(
+        as_type="span", name="rag-ask", input=body.question
+    ) as span:
+        with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+            register_vector(conn)
+            hits = search(conn, body.question)
+        span.update(metadata={"retrieved": _retrieved_meta(hits)})
+        if _no_relevant_hits(hits):
+            span.update(output=NO_ANSWER)
+            return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
+        text, citations = answer(body.question, hits)
+        span.update(output=text)
+        return AskResponse(
+            answer=text,
+            citations=[Citation(**c) for c in citations],
+            sources=[
+                Source(title=h["title"], source=h["source"], distance=h["distance"])
+                for h in hits
+            ],
+        )
 
 
 # Server-Sent Events: the answer streams in as `text` events, then one `citation`
@@ -124,16 +151,27 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
 @app.post("/ask/stream")
 @limiter.limit(RATE_LIMIT)
 def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
-        hits = search(conn, body.question)
-
+    # The span lives inside the generator: the Claude call happens lazily as the
+    # response streams, so the trace has to stay open until the stream is done for
+    # the generation to nest under it. Retrieval moves in here too, so it's traced.
     def events():
-        if _no_relevant_hits(hits):
-            yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
-            return
-        for event in answer_stream(body.question, hits):
-            yield f"data: {json.dumps(event)}\n\n"
+        with langfuse.start_as_current_observation(
+            as_type="span", name="rag-ask-stream", input=body.question
+        ) as span:
+            with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+                register_vector(conn)
+                hits = search(conn, body.question)
+            span.update(metadata={"retrieved": _retrieved_meta(hits)})
+            if _no_relevant_hits(hits):
+                span.update(output=NO_ANSWER)
+                yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
+                return
+            answer_text = []
+            for event in answer_stream(body.question, hits):
+                if event["type"] == "text":
+                    answer_text.append(event["text"])
+                yield f"data: {json.dumps(event)}\n\n"
+            span.update(output="".join(answer_text))
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

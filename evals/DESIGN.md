@@ -36,7 +36,7 @@ These are the cheapest signal we have and the only one that can run on every com
 
 ## Level 2 — Model & human eval (the core loop)
 
-This is where the real work lives. Hamel's prerequisite — "log your traces" — means every eval run records (question, retrieved chunks, answer, citations) so a human or a judge can inspect it. `eval_set.jsonl` is already that trace store for the offline set.
+This is where the real work lives. Hamel's prerequisite — "log your traces" — means every eval run records (question, retrieved chunks, answer, citations) so a human or a judge can inspect it. `eval_set.jsonl` is that trace store for the offline set. For the *live* path, `app.py` now traces each `/ask` to **Langfuse** (one trace per request: retrieved chunks as metadata, the Claude call captured automatically with model + token usage) — the production-side trace store, active whenever the `LANGFUSE_*` keys are set and a no-op otherwise.
 
 **2a. Retrieval metrics — done.** `metrics.py` computes recall@5 and MRR against keyword-derived gold, logs each run to `metrics_log.jsonl`, and separates "tight gold" from inflated broad-keyword gold. This is the number we watch when changing chunking/retrieval (see `chunking-experiments.md`). Keep it.
 
