@@ -14,6 +14,10 @@ Models: Sonnet writes questions; Opus writes the reference (strongest model = mo
 trustworthy gold); the app answers with its own model. No judge model — grading is
 yours.
 
+Runs are resumable: each row is appended and flushed as it completes, so a crash
+loses at most the in-flight item. Re-running tops the file up to N, skipping chunks
+already present — delete answer_feedback.jsonl to start fresh.
+
 Run: uv run python -m evals.answer_system.eval_answers [n]
 """
 
@@ -104,23 +108,40 @@ def rag_answer(conn: psycopg.Connection, question: str) -> tuple[str, list[dict]
     return text, hits
 
 
+def existing_rows() -> list[dict]:
+    """Rows already written, so a re-run can resume rather than start over."""
+    if not OUT_FILE.exists():
+        return []
+    return [json.loads(line) for line in OUT_FILE.read_text().splitlines() if line.strip()]
+
+
 def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else N_ITEMS
-    client = anthropic.Anthropic()
-    rows: list[dict] = []
+    # max_retries above the default 2 gives the question/reference calls extra headroom
+    # on transient 429/5xx during a long run (the RAG answer call retries on its own).
+    client = anthropic.Anthropic(max_retries=4)
+    rows = existing_rows()
+    done = {r["source"]["chunk_id"] for r in rows}
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+    with psycopg.connect(DB_URL, row_factory=dict_row) as conn, OUT_FILE.open("a") as out:
         register_vector(conn)
         for chunk in candidate_chunks(conn, PER_DOC):
-            if len(rows) == n:
+            if len(rows) >= n:
                 break
-            question = make_question(client, chunk["content"])
-            if not question.endswith("?") or question.startswith(("I ", "I'")):
+            if chunk["id"] in done:
                 continue
-            reference = reference_answer(client, question, chunk["content"])
-            rag_text, hits = rag_answer(conn, question)
+            try:
+                question = make_question(client, chunk["content"])
+                if not question.endswith("?") or question.startswith(("I ", "I'")):
+                    continue  # model balked; not a real failure, just skip it
+                reference = reference_answer(client, question, chunk["content"])
+                rag_text, hits = rag_answer(conn, question)
+            except Exception as e:
+                # One bad item (network, rate limit past retries) shouldn't abort the run.
+                print(f"  [skip] chunk {chunk['id']}: {type(e).__name__}: {e}")
+                continue
             retrieved_ids = [h["id"] for h in hits]
-            rows.append({
+            row = {
                 "id": len(rows) + 1,
                 "question": question,
                 "source": {"chunk_id": chunk["id"], "title": chunk["title"]},
@@ -129,15 +150,16 @@ def main() -> None:
                 "retrieved_chunk_ids": retrieved_ids,
                 "retrieved_gold": chunk["id"] in retrieved_ids,
                 "grade": "",  # fill in by hand, e.g. up / down (or correct / partial / wrong)
-            })
+            }
+            rows.append(row)
+            done.add(chunk["id"])
+            out.write(json.dumps(row, ensure_ascii=False) + "\n")
+            out.flush()  # so a crash keeps every completed row
             gold = "gold" if chunk["id"] in retrieved_ids else "miss"
             print(f"  [{len(rows):>2}/{n}] {gold} {chunk['title'][:24]:<24} {question[:48]}")
 
-    with OUT_FILE.open("w") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     got = sum(r["retrieved_gold"] for r in rows)
-    print(f"\nWrote {len(rows)} to {OUT_FILE}  ·  gold chunk retrieved in {got}/{len(rows)}")
+    print(f"\n{OUT_FILE} has {len(rows)} rows  ·  gold chunk retrieved in {got}/{len(rows)}")
 
 
 if __name__ == "__main__":

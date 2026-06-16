@@ -68,7 +68,11 @@ SYSTEM_PROMPT = (
     "documents. If the documents do not contain the answer, say you don't know."
 )
 
-_voyage = voyageai.Client()
+# Retry transient network errors (the Voyage client defaults to none, so a dropped
+# connection during embedding otherwise fails hard). The Anthropic client already
+# retries on its own; this gives embedding the same resilience on the /ask path and
+# in the eval scripts.
+_voyage = voyageai.Client(max_retries=2)
 
 
 # Cache repeated queries: embeddings are deterministic for a given input, so an
