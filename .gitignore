@@ -11,3 +11,6 @@ wheels/
 
 # Secrets
 .env
+
+# Generated grading sheets (rendered from the eval jsonl)
+evals/**/*.html
