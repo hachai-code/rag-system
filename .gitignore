@@ -14,3 +14,6 @@ wheels/
 
 # Generated grading sheets (rendered from the eval jsonl)
 evals/**/*.html
+
+# Human-eval working files
+evals/**/rag_system_human_eval*
