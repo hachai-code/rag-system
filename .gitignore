@@ -17,3 +17,6 @@ evals/**/*.html
 
 # Human-eval working files
 evals/**/rag_system_human_eval*
+
+# Obsidian vault config
+.obsidian/
