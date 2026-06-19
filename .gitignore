@@ -20,3 +20,6 @@ evals/**/rag_system_human_eval*
 
 # Obsidian vault config
 .obsidian/
+
+# macOS Finder metadata
+.DS_Store
