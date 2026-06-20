@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learn Python by Reading a Real RAG System</title>
+<link rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #24292f; --muted: #57606a; --line: #e3e3e0;
+    --accent: #6f42c1; --code-bg: #282c34; --inline-bg: #efeef0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
+  h1 { font-size: 2.4rem; line-height: 1.15; margin: 0 0 .5rem; }
+  h2 {
+    font-size: 1.7rem; margin: 3.2rem 0 1rem; padding-top: 1rem;
+    border-top: 1px solid var(--line);
+  }
+  h3 { font-size: 1.25rem; margin: 2rem 0 .75rem; }
+  h2, h3 { scroll-margin-top: 1rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  p { margin: 1rem 0; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+  ul, ol { padding-left: 1.5rem; }
+  li { margin: .4rem 0; }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: .88em;
+  }
+  p code, li code, h2 code, h3 code {
+    background: var(--inline-bg); padding: .12em .38em; border-radius: 5px;
+    color: #9a2cb3;
+  }
+  pre {
+    background: var(--code-bg); border-radius: 10px; padding: 1.1rem 1.25rem;
+    overflow-x: auto; margin: 1.2rem 0; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: #abb2bf; }
+  .lede { color: var(--muted); font-size: 1.1rem; }
+  .toc {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 1rem 1.25rem; margin: 2rem 0;
+  }
+  .toc ol { margin: .25rem 0; }
+  footer {
+    margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1 id="learn-python-by-reading-a-real-rag-system">Learn Python by Reading a Real RAG System</h1>
+<p>This tutorial teaches Python using the actual code in this repository — a working Retrieval-Augmented Generation (RAG) system that loads a corpus, chunks it, embeds it into a vector database, and answers questions with Claude.</p>
+<p>Every example below is real code from this project (lightly trimmed). The idea is to learn Python the way you&#x27;ll actually use it: not toy snippets, but the patterns that show up in production code. Each section names the file it comes from so you can open it and read the surrounding context.</p>
+<p><strong>How to use this:</strong> read top to bottom if you&#x27;re newer to Python, or jump to a topic. Each section has a *Concept*, the *Code from the repo*, and a *Why it works this way* explanation.</p>
+<hr>
+<h2 id="table-of-contents">Table of contents</h2>
+<ol>
+<li><a href="#1-the-shape-of-a-python-file">The shape of a Python file</a></li>
+<li><a href="#2-functions-and-type-hints">Functions and type hints</a></li>
+<li><a href="#3-dataclasses-structured-data">Dataclasses: structured data</a></li>
+<li><a href="#4-strings-f-strings-and-formatting">Strings, f-strings, and formatting</a></li>
+<li><a href="#5-lists-dicts-and-comprehensions">Lists, dicts, and comprehensions</a></li>
+<li><a href="#6-control-flow-and-iteration-tricks">Control flow and iteration tricks</a></li>
+<li><a href="#7-working-with-files-and-paths">Working with files and paths</a></li>
+<li><a href="#8-dispatch-tables-dicts-instead-of-if-chains">Dispatch tables: dicts instead of if-chains</a></li>
+<li><a href="#9-closures-and-nonlocal">Closures and <code>nonlocal</code></a></li>
+<li><a href="#10-generators-and-yield">Generators and <code>yield</code></a></li>
+<li><a href="#11-decorators-and-caching">Decorators and caching</a></li>
+<li><a href="#12-context-managers-with">Context managers (<code>with</code>)</a></li>
+<li><a href="#13-exceptions-and-retries">Exceptions and retries</a></li>
+<li><a href="#14-modules-imports-and-environment-config">Modules, imports, and environment config</a></li>
+<li><a href="#15-pydantic-and-fastapi-validation-at-the-edge">Pydantic and FastAPI: validation at the edge</a></li>
+<li><a href="#16-putting-it-together-the-full-pipeline">Putting it together: the full pipeline</a></li>
+</ol>
+<hr>
+<h2 id="1-the-shape-of-a-python-file">1. The shape of a Python file</h2>
+<p><strong>Concept.</strong> Every Python script has a recognizable skeleton: a module docstring at the top, imports, then definitions, and often a <code>main()</code> guarded by <code>if __name__ == &quot;__main__&quot;:</code>.</p>
+<p><strong>Code</strong> (<code>main.py</code>, the whole file):</p>
+<pre><code class="language-python">def main():
+    print(&quot;Hello from rag-system!&quot;)
+
+
+if __name__ == &quot;__main__&quot;:
+    main()</code></pre>
+<p><strong>Why it works this way.</strong> When you run <code>python main.py</code>, Python sets the special variable <code>__name__</code> to <code>&quot;__main__&quot;</code>, so the <code>if</code> block fires and calls <code>main()</code>. But when another file does <code>import main</code>, <code>__name__</code> is <code>&quot;main&quot;</code> instead, so the block is skipped — importing the module doesn&#x27;t accidentally run it. This is why almost every file in this repo ends with that exact guard (<code>ingest.py</code>, <code>chunk.py</code>, <code>embed.py</code>, <code>rag.py</code>).</p>
+<p>The triple-quoted string at the very top of a file is a <strong>module docstring</strong> — documentation that tools and <code>help()</code> can read. From <code>ingest.py</code>:</p>
+<pre><code class="language-python">&quot;&quot;&quot;Load the innerdance corpus into clean text + metadata, then print its shape.
+
+Run: uv run ingest.py
+
+This is the first stage of the RAG pipeline. It does NOT chunk or embed yet ...
+&quot;&quot;&quot;</code></pre>
+<hr>
+<h2 id="2-functions-and-type-hints">2. Functions and type hints</h2>
+<p><strong>Concept.</strong> Functions are defined with <code>def</code>. Modern Python annotates parameters and return values with <strong>type hints</strong>. They don&#x27;t change how the code runs — Python doesn&#x27;t enforce them at runtime — but they document intent and let editors and type checkers catch mistakes.</p>
+<p><strong>Code</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">def count_tokens(text: str) -&gt; int:
+    return len(_encoder.encode(text))</code></pre>
+<p>Read this as: &quot;<code>count_tokens</code> takes a <code>text</code> that is a <code>str</code>, and returns an <code>int</code>.&quot; Here&#x27;s one with several typed parameters and defaults (<code>chunk.py</code>):</p>
+<pre><code class="language-python">def chunk_document(
+    doc: Document, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
+) -&gt; list[Chunk]:
+    &quot;&quot;&quot;Greedily pack lines into ~chunk_size-token chunks with ~overlap carryover.&quot;&quot;&quot;
+    ...</code></pre>
+<p><strong>Why it works this way.</strong></p>
+<ul>
+<li><code>chunk_size: int = CHUNK_SIZE</code> gives the parameter a <strong>default value</strong>. Callers can write <code>chunk_document(doc)</code> and get the default, or override it with <code>chunk_document(doc, chunk_size=128)</code>.</li>
+<li><code>-&gt; list[Chunk]</code> says the function returns a list of <code>Chunk</code> objects. Modern Python (3.9+) lets you write <code>list[Chunk]</code> directly instead of importing <code>List</code> from <code>typing</code>.</li>
+<li><code>list[float]</code> (used all over <code>embed.py</code>) means &quot;a list of floats&quot; — exactly what an embedding vector is.</li>
+</ul>
+<p>A type hint can also say &quot;this or <code>None</code>&quot; with <code>|</code> (<code>chunk.py</code>):</p>
+<pre><code class="language-python">heading: str | None  # nearest preceding heading line, if any</code></pre>
+<p><code>str | None</code> means &quot;a string, or nothing.&quot; This is the modern replacement for <code>Optional[str]</code>.</p>
+<hr>
+<h2 id="3-dataclasses-structured-data">3. Dataclasses: structured data</h2>
+<p><strong>Concept.</strong> When you need a record with named fields, a <code>@dataclass</code> gives you one with almost no boilerplate. You declare the fields and their types; Python generates the <code>__init__</code>, a readable <code>__repr__</code>, equality, and more.</p>
+<p><strong>Code</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">from dataclasses import dataclass
+
+
+@dataclass
+class Document:
+    source: str    # path relative to the corpus root
+    title: str     # human-readable name (from the filename)
+    date: str      # ISO date the file was last modified
+    section: str   # top-level corpus folder, e.g. &quot;Maia&quot; or &quot;Documents&quot;
+    text: str      # cleaned plain text
+    n_tokens: int  # estimated token count of `text`</code></pre>
+<p>Now you can create and use one naturally:</p>
+<pre><code class="language-python">doc = Document(
+    source=&quot;Maia/episode1.rtf&quot;,
+    title=&quot;episode1&quot;,
+    date=&quot;2026-01-15&quot;,
+    section=&quot;Maia&quot;,
+    text=&quot;...&quot;,
+    n_tokens=4200,
+)
+print(doc.title)      # &quot;episode1&quot;
+print(doc.n_tokens)   # 4200</code></pre>
+<p><strong>Why it works this way.</strong> The <code>@dataclass</code> line is a <strong>decorator</strong> (more on those in §11) that rewrites the class for you. Without it you&#x27;d hand-write an <code>__init__</code> that assigns all six fields. The <code>Chunk</code> class in <code>chunk.py</code> works the same way. Dataclasses are the right tool when the data has a fixed, known shape and you want attribute access (<code>doc.title</code>) rather than dictionary keys (<code>doc[&quot;title&quot;]</code>).</p>
+<hr>
+<h2 id="4-strings-f-strings-and-formatting">4. Strings, f-strings, and formatting</h2>
+<p><strong>Concept.</strong> An <strong>f-string</strong> (prefix <code>f&quot;...&quot;</code>) lets you embed expressions directly inside a string with <code>{...}</code>. It&#x27;s the standard way to build strings in modern Python.</p>
+<p><strong>Code</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">texts = [f&quot;{c.section} — {c.title[:60]}\n\n{c.content}&quot; for c in chunks]</code></pre>
+<p>This builds, for each chunk, a string like:</p>
+<pre><code class="language-plaintext">Maia — Episode 1: The Architecture
+
+&lt;the chunk&#x27;s content&gt;</code></pre>
+<p>Two things are happening inside the braces:</p>
+<ul>
+<li><code>c.title[:60]</code> is <strong>slicing</strong> — take the first 60 characters of the title.</li>
+<li><code>\n\n</code> is an escape sequence — two newlines, producing the blank line.</li>
+</ul>
+<p><strong>Format specifiers</strong> go after a colon and control how a value is rendered (<code>ingest.py</code>):</p>
+<pre><code class="language-python">print(f&quot;Total tokens:  {total_tokens:,} (~{total_tokens / 1000:.0f}k)&quot;)</code></pre>
+<ul>
+<li><code>{total_tokens:,}</code> inserts thousands separators → <code>1,234,567</code>.</li>
+<li><code>{... :.0f}</code> formats a float with zero decimal places → <code>1235k</code>.</li>
+</ul>
+<p>And alignment, used to print aligned tables (<code>chunk.py</code>):</p>
+<pre><code class="language-python">print(f&quot;  {len(doc_chunks):&gt;4}  {source}&quot;)</code></pre>
+<p><code>:&gt;4</code> right-aligns the number in a field 4 characters wide. There&#x27;s also <code>:&lt;40</code> (left-align in 40 chars) used elsewhere to lay out bar charts.</p>
+<p>You can format with <code>!r</code> to get the <code>repr()</code> (quoted, debug form) of a value (<code>chunk.py</code>):</p>
+<pre><code class="language-python">print(f&quot;... heading={c.heading!r}&quot;)   # heading=&#x27;PART ONE&#x27; rather than heading=PART ONE</code></pre>
+<hr>
+<h2 id="5-lists-dicts-and-comprehensions">5. Lists, dicts, and comprehensions</h2>
+<p><strong>Concept.</strong> A <strong>comprehension</strong> builds a list, dict, or set from an iterable in one expression. It replaces the common &quot;make an empty list, loop, append&quot; pattern.</p>
+<p><strong>Filtering</strong> with a comprehension (<code>chunk.py</code>):</p>
+<pre><code class="language-python">lines = [line for line in doc.text.split(&quot;\n&quot;) if line.strip()]</code></pre>
+<p>Read it right-to-left of the <code>for</code>: &quot;for each <code>line</code> in the split text, keep it <strong>if</strong> <code>line.strip()</code> is truthy (i.e. the line isn&#x27;t blank).&quot; The equivalent long form would be:</p>
+<pre><code class="language-python">lines = []
+for line in doc.text.split(&quot;\n&quot;):
+    if line.strip():
+        lines.append(line)</code></pre>
+<p><strong>Transforming</strong> each item (<code>rag.py</code>):</p>
+<pre><code class="language-python">text = &quot;&quot;.join(block.text for block in response.content)</code></pre>
+<p>This is a <strong>generator expression</strong> (no brackets) feeding <code>join</code> — it pulls the <code>.text</code> out of each block and concatenates them.</p>
+<p><strong>Dict comprehension</strong> (<code>rag.py</code>):</p>
+<pre><code class="language-python">by_id = {hit[&quot;id&quot;]: hit[&quot;content&quot;] for hit in hits}</code></pre>
+<p>This builds a lookup table mapping each chunk&#x27;s id to its content, so later code can do <code>by_id[some_id]</code> in O(1).</p>
+<p><strong>A list of dicts</strong> built from objects (<code>rag.py</code>):</p>
+<pre><code class="language-python">return [
+    {
+        &quot;type&quot;: &quot;document&quot;,
+        &quot;source&quot;: {&quot;type&quot;: &quot;text&quot;, &quot;media_type&quot;: &quot;text/plain&quot;, &quot;data&quot;: hit[&quot;content&quot;]},
+        &quot;title&quot;: hit[&quot;title&quot;],
+        &quot;citations&quot;: {&quot;enabled&quot;: True},
+    }
+    for hit in hits
+]</code></pre>
+<p><strong>Why it works this way.</strong> Comprehensions are both shorter and usually faster than the manual loop. The rule of thumb: use a comprehension when you&#x27;re *building a collection*; use a regular <code>for</code> loop when you&#x27;re doing side effects (like printing) or the logic is too complex to read on one line.</p>
+<hr>
+<h2 id="6-control-flow-and-iteration-tricks">6. Control flow and iteration tricks</h2>
+<p><strong><code>enumerate</code></strong> gives you the index alongside each item. Note the <code>start=1</code> to count from 1 instead of 0 (<code>rag.py</code>):</p>
+<pre><code class="language-python">for rank, hit in enumerate(hits, 1):
+    scores[hit[&quot;id&quot;]] = scores.get(hit[&quot;id&quot;], 0.0) + weight / (RRF_K + rank)</code></pre>
+<p><strong><code>dict.get</code> with a default</strong> — <code>scores.get(hit[&quot;id&quot;], 0.0)</code> returns the current score if the key exists, or <code>0.0</code> if it&#x27;s the first time we&#x27;ve seen that id. This avoids a <code>KeyError</code> and the need to check membership first.</p>
+<p><strong><code>zip</code></strong> walks two lists in lockstep (<code>embed.py</code>):</p>
+<pre><code class="language-python">rows = [
+    (doc_ids[c.source], c.chunk_index, c.content, embedding, Jsonb({&quot;heading&quot;: c.heading}))
+    for c, embedding in zip(chunks, embeddings)
+]</code></pre>
+<p>Each iteration pairs the *nth* chunk with the *nth* embedding.</p>
+<p><strong><code>reversed</code></strong> iterates back-to-front (<code>chunk.py</code>):</p>
+<pre><code class="language-python">for line, n in reversed(lines):
+    if kept and total + n &gt; overlap:
+        break
+    kept.append((line, n))
+    total += n</code></pre>
+<p><strong><code>next(...)</code> with a generator and a default</strong> finds the first match, or returns a fallback if there is none (<code>rag.py</code>):</p>
+<pre><code class="language-python">heading = next(
+    (r[&quot;heading&quot;] for r in rows if r[&quot;chunk_index&quot;] == target[&quot;chunk_index&quot;]), None
+)</code></pre>
+<p>This is the idiomatic &quot;find first item matching a condition&quot; — no loop with a flag variable needed. The second argument (<code>None</code>) is what you get if nothing matches.</p>
+<p><strong><code>sorted</code> with a <code>key</code></strong> sorts by a computed value. Here, by a dict&#x27;s own values, descending (<code>rag.py</code>):</p>
+<pre><code class="language-python">top_ids = sorted(scores, key=scores.get, reverse=True)[:k]</code></pre>
+<p><code>scores.get</code> is passed as the key function, so each id sorts by its score; <code>reverse=True</code> puts the highest first; <code>[:k]</code> keeps the top k.</p>
+<p><strong>Range with a step</strong> to sample evenly (<code>chunk.py</code>):</p>
+<pre><code class="language-python">for c in chunks[::step][:count]:
+    ...</code></pre>
+<p><code>chunks[::step]</code> takes every <code>step</code>-th chunk (slice with a step), then <code>[:count]</code> caps how many.</p>
+<hr>
+<h2 id="7-working-with-files-and-paths">7. Working with files and paths</h2>
+<p><strong>Concept.</strong> The <code>pathlib</code> module models filesystem paths as objects. You build paths with the <code>/</code> operator and call methods on them instead of stitching strings.</p>
+<p><strong>Code</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">from pathlib import Path
+
+CORPUS_ROOT = Path.home() / &quot;Documents&quot; / &quot;innerdance corpus&quot;</code></pre>
+<p><code>Path.home()</code> is your home directory; <code>/</code> joins path segments in a cross-platform way (no manual <code>os.path.join</code> or worrying about slashes).</p>
+<p><strong>Walking a directory tree and filtering</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">def load_corpus(root: Path) -&gt; list[Document]:
+    documents = []
+    for path in sorted(root.rglob(&quot;*&quot;)):
+        if not path.is_file() or path.suffix.lower() not in EXTRACTORS:
+            continue
+        print(f&quot;  loading {path.relative_to(root)} ...&quot;, flush=True)
+        documents.append(load_document(path, root))
+    return documents</code></pre>
+<p>Path methods used here:</p>
+<ul>
+<li><code>root.rglob(&quot;*&quot;)</code> — recursively yield every path under <code>root</code>.</li>
+<li><code>path.is_file()</code> — is this a file (not a directory)?</li>
+<li><code>path.suffix</code> — the extension, like <code>&quot;.pdf&quot;</code>; <code>.lower()</code> normalizes case.</li>
+<li><code>path.relative_to(root)</code> — strip the root prefix for clean display.</li>
+<li><code>path.stem</code> (in <code>load_document</code>) — filename without extension.</li>
+</ul>
+<p><strong><code>continue</code></strong> skips to the next loop iteration — here, anything that isn&#x27;t a file with a known extension is skipped early (&quot;guard clause&quot; style), which keeps the rest of the loop body un-indented.</p>
+<p><strong>Reading file contents</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">def extract_plain(path: Path) -&gt; str:
+    return path.read_text(encoding=&quot;utf-8&quot;, errors=&quot;ignore&quot;)</code></pre>
+<p><code>read_text</code> reads the whole file as a string. <code>errors=&quot;ignore&quot;</code> drops bytes that aren&#x27;t valid UTF-8 rather than crashing — pragmatic when ingesting messy real-world files. There&#x27;s also <code>path.read_bytes()</code> (used for HTML) when you want raw bytes.</p>
+<p><strong>Reading a file line by line into JSON records</strong> (<code>evals/metrics.py</code>):</p>
+<pre><code class="language-python">rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]</code></pre>
+<p>This is the JSONL pattern (one JSON object per line): read the file, split into lines, skip blanks, parse each line.</p>
+<hr>
+<h2 id="8-dispatch-tables-dicts-instead-of-if-chains">8. Dispatch tables: dicts instead of if-chains</h2>
+<p><strong>Concept.</strong> When behavior depends on a value, a dict mapping values to functions is often cleaner than a long <code>if/elif</code> chain. Functions are first-class objects in Python — you can store them in data structures and call them later.</p>
+<p><strong>Code</strong> (<code>ingest.py</code>):</p>
+<pre><code class="language-python">EXTRACTORS = {
+    &quot;.rtf&quot;: extract_rtf,
+    &quot;.pdf&quot;: extract_pdf,
+    &quot;.epub&quot;: extract_epub,
+    &quot;.html&quot;: extract_html,
+    &quot;.htm&quot;: extract_html,
+    &quot;.md&quot;: extract_plain,
+    &quot;.txt&quot;: extract_plain,
+}</code></pre>
+<p>Notice the values are <strong>the functions themselves</strong> — <code>extract_rtf</code>, not <code>extract_rtf()</code>. There are no parentheses, so we&#x27;re storing the function, not calling it. Then to dispatch (<code>ingest.py</code>):</p>
+<pre><code class="language-python">def load_document(path: Path, root: Path) -&gt; Document:
+    raw = EXTRACTORS[path.suffix.lower()](path)
+    ...</code></pre>
+<p>Read <code>EXTRACTORS<a href="path">path.suffix.lower()</a></code> in two steps:</p>
+<ol>
+<li><code>EXTRACTORS[path.suffix.lower()]</code> looks up the right function for this file&#x27;s extension (e.g. for <code>.pdf</code> it returns <code>extract_pdf</code>).</li>
+<li><code>(path)</code> then <strong>calls</strong> that function with <code>path</code>.</li>
+</ol>
+<p><strong>Why it works this way.</strong> Adding a new file format is one line in the dict, no edits to <code>load_document</code>. The same <code>.htm</code>/<code>.html</code> both pointing at <code>extract_html</code> shows how two keys can share one handler. This pattern — a &quot;dispatch table&quot; or &quot;registry&quot; — scales far better than:</p>
+<pre><code class="language-python"># the brittle alternative this avoids:
+if suffix == &quot;.rtf&quot;:
+    raw = extract_rtf(path)
+elif suffix == &quot;.pdf&quot;:
+    raw = extract_pdf(path)
+elif ...</code></pre>
+<hr>
+<h2 id="9-closures-and-nonlocal">9. Closures and <code>nonlocal</code></h2>
+<p><strong>Concept.</strong> A function defined inside another function can read the outer function&#x27;s variables. To *reassign* them, it needs the <code>nonlocal</code> keyword. A nested function that captures surrounding variables is called a <strong>closure</strong>.</p>
+<p><strong>Code</strong> (<code>chunk.py</code>, inside <code>chunk_document</code>):</p>
+<pre><code class="language-python">def chunk_document(doc, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    chunks: list[Chunk] = []
+    current: list[tuple[str, int]] = []
+    current_tokens = 0
+    chunk_heading: str | None = None
+
+    def flush() -&gt; None:
+        nonlocal current, current_tokens, chunk_heading
+        content = &quot;\n&quot;.join(line for line, _ in current)
+        chunks.append(Chunk(..., content=content, n_tokens=current_tokens, ...))
+        current, current_tokens = _tail_overlap(current, overlap)
+        chunk_heading = heading
+
+    for line in lines:
+        ...
+        if current and current_tokens + n &gt; chunk_size:
+            flush()
+        ...</code></pre>
+<p><strong>Why it works this way.</strong> <code>flush()</code> needs to *modify* <code>current</code>, <code>current_tokens</code>, and <code>chunk_heading</code> — variables that belong to the enclosing <code>chunk_document</code>. Without <code>nonlocal</code>, an assignment like <code>current_tokens = ...</code> inside <code>flush</code> would create a brand-new local variable that vanishes when <code>flush</code> returns, leaving the outer one untouched. <code>nonlocal</code> says &quot;these names refer to the enclosing function&#x27;s variables — assign to *those*.&quot;</p>
+<p>Note the asymmetry: <code>chunks.append(...)</code> does <strong>not</strong> need <code>nonlocal</code>, because appending *mutates* the existing list rather than rebinding the name <code>chunks</code>. You only need <code>nonlocal</code> (or <code>global</code>) when you <strong>reassign</strong> a name with <code>=</code>.</p>
+<p>Also note the tuple unpacking in two places:</p>
+<ul>
+<li><code>for line, _ in current</code> — each item is a <code>(line, n_tokens)</code> tuple; <code>_</code> is the conventional name for &quot;a value I&#x27;m deliberately ignoring.&quot;</li>
+<li><code>current, current_tokens = _tail_overlap(...)</code> — the function returns a tuple, and this unpacks it into two variables in one line.</li>
+</ul>
+<hr>
+<h2 id="10-generators-and-yield">10. Generators and <code>yield</code></h2>
+<p><strong>Concept.</strong> A function that uses <code>yield</code> instead of <code>return</code> is a <strong>generator</strong>: calling it doesn&#x27;t run the body, it returns a lazy iterator. Each <code>yield</code> produces one value and pauses; execution resumes on the next request. This is how you stream results without building a giant list in memory.</p>
+<p><strong>Code</strong> (<code>rag.py</code>):</p>
+<pre><code class="language-python">def answer_stream(question: str, hits: list[dict]):
+    &quot;&quot;&quot;Yield the answer incrementally, then one citation record per source.&quot;&quot;&quot;
+    client = anthropic.Anthropic()
+    with client.messages.stream(
+        model=CLAUDE_MODEL,
+        max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
+        messages=_messages(question, hits),
+    ) as stream:
+        for text in stream.text_stream:
+            yield {&quot;type&quot;: &quot;text&quot;, &quot;text&quot;: text}
+        final = stream.get_final_message()
+    for cite in _citations(final.content, hits):
+        yield {&quot;type&quot;: &quot;citation&quot;, **cite}</code></pre>
+<p>The consumer drives it with a <code>for</code> loop (<code>app.py</code>):</p>
+<pre><code class="language-python">for event in answer_stream(body.question, hits):
+    if event[&quot;type&quot;] == &quot;text&quot;:
+        answer_text.append(event[&quot;text&quot;])
+    yield f&quot;data: {json.dumps(event)}\n\n&quot;</code></pre>
+<p><strong>Why it works this way.</strong> Claude&#x27;s answer arrives token by token. Instead of waiting for the whole answer, <code>answer_stream</code> <code>yield</code>s each piece the moment it arrives, so the UI can display text live. The function &quot;remembers&quot; where it paused — including being inside the <code>with</code> block — and continues from there on each iteration. After the text is exhausted it yields the citations.</p>
+<p>The <code><strong>cite</code> in <code>{&quot;type&quot;: &quot;citation&quot;, </strong>cite}</code> is <strong>dict unpacking</strong>: it spreads all of <code>cite</code>&#x27;s key/value pairs into the new dict, then adds <code>&quot;type&quot;</code>. It&#x27;s the dict equivalent of &quot;copy these fields and add one more.&quot;</p>
+<p>Note also that <code>app.py</code>&#x27;s <code>events()</code> is *itself* a generator, and FastAPI&#x27;s <code>StreamingResponse</code> consumes it — generators compose naturally.</p>
+<hr>
+<h2 id="11-decorators-and-caching">11. Decorators and caching</h2>
+<p><strong>Concept.</strong> A <strong>decorator</strong> wraps a function to add behavior, using the <code>@name</code> syntax above a <code>def</code>. You&#x27;ve already seen <code>@dataclass</code>. Here&#x27;s one that adds caching for free.</p>
+<p><strong>Code</strong> (<code>rag.py</code>):</p>
+<pre><code class="language-python">from functools import lru_cache
+
+
+@lru_cache(maxsize=256)
+def embed_query(question: str) -&gt; list[float]:
+    &quot;&quot;&quot;Embed the question. input_type=&#x27;query&#x27; is the search-side counterpart ...&quot;&quot;&quot;
+    result = _voyage.embed(
+        [question], model=VOYAGE_MODEL, input_type=&quot;query&quot;, output_dimension=EMBED_DIM
+    )
+    return result.embeddings[0]</code></pre>
+<p><strong>Why it works this way.</strong> <code>lru_cache</code> (Least Recently Used cache) remembers the return value for each set of arguments. The first time you call <code>embed_query(&quot;What is RAG?&quot;)</code>, it makes the network call to Voyage and stores the result. Every later call with that *same* question returns the stored vector instantly — no API call, no latency, no cost. <code>maxsize=256</code> caps how many distinct questions it remembers, evicting the least-recently-used when full.</p>
+<p>This works precisely because embedding is <strong>deterministic and side-effect-free</strong>: the same input always yields the same output, so a cached answer is always correct. Don&#x27;t cache functions whose results change over time or that have side effects.</p>
+<p>Decorators stack, too. In <code>app.py</code> an endpoint wears three:</p>
+<pre><code class="language-python">@app.post(&quot;/ask&quot;)
+@limiter.limit(RATE_LIMIT)
+def ask(request: Request, body: AskRequest) -&gt; AskResponse:
+    ...</code></pre>
+<p><code>@app.post(&quot;/ask&quot;)</code> registers the route; <code>@limiter.limit(...)</code> adds rate limiting. They apply bottom-up around the function.</p>
+<hr>
+<h2 id="12-context-managers-with">12. Context managers (<code>with</code>)</h2>
+<p><strong>Concept.</strong> A <code>with</code> block guarantees setup and cleanup happen as a pair — the cleanup runs even if an exception is raised inside the block. The classic use is resources that must be closed: files, network connections, database sessions.</p>
+<p><strong>Code</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">with psycopg.connect(DB_URL) as conn:
+    register_vector(conn)
+    doc_ids = upsert_documents(conn, documents)
+    store_chunks(conn, chunks, embeddings, doc_ids)</code></pre>
+<p><strong>Why it works this way.</strong> <code>psycopg.connect(...)</code> opens a database connection. The <code>with</code> ensures the connection is committed and closed when the block ends — whether it ends normally or because something raised an error partway through. You never have to remember a <code>finally: conn.close()</code>.</p>
+<p>You can nest <code>with</code> blocks, and a single connection can be opened with options (<code>rag.py</code>):</p>
+<pre><code class="language-python">with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+    register_vector(conn)
+    hits = rerank_search(conn, question)</code></pre>
+<p><code>row_factory=dict_row</code> makes query results come back as dicts (so you write <code>row[&quot;title&quot;]</code>) instead of plain tuples.</p>
+<p>Opening a file for appending uses the same pattern (<code>evals/metrics.py</code>):</p>
+<pre><code class="language-python">with LOG_FILE.open(&quot;a&quot;) as f:
+    f.write(json.dumps(record) + &quot;\n&quot;)</code></pre>
+<p>The file is flushed and closed automatically at the end of the block.</p>
+<p>The streaming example in §10 nests a <code>with</code> *inside* a generator — the SDK&#x27;s <code>client.messages.stream(...) as stream</code> keeps the HTTP stream open exactly as long as the generator is producing values.</p>
+<hr>
+<h2 id="13-exceptions-and-retries">13. Exceptions and retries</h2>
+<p><strong>Concept.</strong> <code>try</code>/<code>except</code> handles errors. You can catch *specific* exception types, group several into a tuple, and re-raise when you&#x27;ve given up. A common real-world use is retrying transient network failures with backoff.</p>
+<p><strong>Defining which errors are worth retrying</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">_TRANSIENT_ERRORS = (
+    voyageai.error.ServiceUnavailableError,
+    voyageai.error.ServerError,
+    voyageai.error.APIConnectionError,
+    voyageai.error.Timeout,
+    voyageai.error.RateLimitError,
+)</code></pre>
+<p><strong>The retry loop</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">def _embed_with_retry(client, batch, attempts=5):
+    for attempt in range(attempts):
+        try:
+            return client.embed(
+                batch, model=VOYAGE_MODEL, input_type=&quot;document&quot;,
+                output_dimension=EMBED_DIM,
+            )
+        except _TRANSIENT_ERRORS as exc:
+            if attempt == attempts - 1:
+                raise
+            wait = 2**attempt
+            print(f&quot;  Voyage error ({type(exc).__name__}); retrying in {wait}s ...&quot;)
+            time.sleep(wait)</code></pre>
+<p><strong>Why it works this way.</strong></p>
+<ul>
+<li><code>except _TRANSIENT_ERRORS as exc</code> catches *any* of the exception types in that tuple, and binds the caught exception to <code>exc</code> so we can inspect it.</li>
+<li>Catching a <strong>specific</strong> set (not a bare <code>except:</code>) is deliberate. Auth errors and bad-request errors are *not* in the tuple, so they aren&#x27;t retried — retrying them would just waste time, since they&#x27;ll fail identically every time.</li>
+<li><code>if attempt == attempts - 1: raise</code> — on the final attempt, give up and re-raise the original exception so the caller sees the real failure.</li>
+<li><code>wait = 2<strong>attempt</code> is </strong>exponential backoff**: wait 1s, then 2s, 4s, 8s. This is gentler on an overloaded server than hammering it immediately.</li>
+<li><code>return</code> inside <code>try</code> means a success exits the loop (and the function) immediately.</li>
+</ul>
+<p><strong>Raising your own errors to fail fast</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">if not os.environ.get(&quot;VOYAGE_API_KEY&quot;):
+    raise SystemExit(&quot;VOYAGE_API_KEY is not set. Add it to .env or export it.&quot;)</code></pre>
+<p><code>SystemExit</code> with a message prints it and exits with a non-zero status — a clean way to abort a script with a helpful message instead of a stack trace.</p>
+<hr>
+<h2 id="14-modules-imports-and-environment-config">14. Modules, imports, and environment config</h2>
+<p><strong>Concept.</strong> Each <code>.py</code> file is a <strong>module</strong>. You pull names from other modules with <code>import</code>. This repo&#x27;s modules form the pipeline, and later stages import earlier ones.</p>
+<p><strong>Importing your own modules</strong> (<code>embed.py</code>):</p>
+<pre><code class="language-python">from chunk import Chunk, chunk_corpus
+from ingest import CORPUS_ROOT, Document, load_corpus
+from rag import DB_URL  # local default, or DATABASE_URL if set</code></pre>
+<p>This is how <code>embed.py</code> reuses the <code>Document</code> dataclass and <code>load_corpus</code> function defined in <code>ingest.py</code>, rather than redefining them. Notice the single source of truth: <code>DB_URL</code> is defined once in <code>rag.py</code> and imported wherever it&#x27;s needed.</p>
+<p><strong>Reading configuration from the environment</strong> (<code>rag.py</code>):</p>
+<pre><code class="language-python">import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_URL = os.environ.get(&quot;DATABASE_URL&quot;, &quot;postgresql://postgres:postgres@localhost:5432/rag&quot;)
+TOP_K = 5</code></pre>
+<p><strong>Why it works this way.</strong></p>
+<ul>
+<li><code>load_dotenv()</code> reads a local <code>.env</code> file and loads its <code>KEY=value</code> lines into the environment — so secrets like <code>VOYAGE_API_KEY</code> live in a file you don&#x27;t commit, not in the code.</li>
+<li><code>os.environ.get(&quot;DATABASE_URL&quot;, &quot;&lt;default&gt;&quot;)</code> reads an environment variable, falling back to a sensible default (a local Docker Postgres) when it isn&#x27;t set. This is the idiom for &quot;configurable, with a default&quot;: works out of the box locally, overridable in production by setting the variable.</li>
+<li>Module-level constants in <code>ALL_CAPS</code> (<code>TOP_K</code>, <code>EMBED_DIM</code>, <code>CLAUDE_MODEL</code>) are the Python convention for &quot;this is a constant.&quot; <code>chunk.py</code> even mixes the two: <code>CHUNK_SIZE = int(os.environ.get(&quot;CHUNK_SIZE&quot;, &quot;256&quot;))</code> — env-overridable, but with a default and converted from string to <code>int</code>.</li>
+</ul>
+<hr>
+<h2 id="15-pydantic-and-fastapi-validation-at-the-edge">15. Pydantic and FastAPI: validation at the edge</h2>
+<p><strong>Concept.</strong> <strong>Pydantic</strong> models declare the shape of data and validate it automatically. <strong>FastAPI</strong> uses them to validate incoming requests and serialize outgoing responses. This is how you stop bad data at the boundary of your system.</p>
+<p><strong>Defining request and response shapes</strong> (<code>app.py</code>):</p>
+<pre><code class="language-python">from typing import Annotated
+from pydantic import BaseModel, Field
+
+
+class AskRequest(BaseModel):
+    question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
+
+
+class Source(BaseModel):
+    title: str
+    source: str
+    distance: float
+
+
+class AskResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
+    sources: list[Source]</code></pre>
+<p><strong>Wiring them into an endpoint</strong> (<code>app.py</code>):</p>
+<pre><code class="language-python">@app.post(&quot;/ask&quot;)
+@limiter.limit(RATE_LIMIT)
+def ask(request: Request, body: AskRequest) -&gt; AskResponse:
+    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+        register_vector(conn)
+        hits = search(conn, body.question)
+    if _no_relevant_hits(hits):
+        return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
+    text, citations = answer(body.question, hits)
+    return AskResponse(
+        answer=text,
+        citations=[Citation(**c) for c in citations],
+        sources=[
+            Source(title=h[&quot;title&quot;], source=h[&quot;source&quot;], distance=h[&quot;distance&quot;])
+            for h in hits
+        ],
+    )</code></pre>
+<p><strong>Why it works this way.</strong></p>
+<ul>
+<li>Because the parameter is typed <code>body: AskRequest</code>, FastAPI automatically reads the JSON request body, validates it against <code>AskRequest</code>, and rejects anything malformed with a 422 error — *before* your function runs. An empty question or one over 1000 chars never reaches your code.</li>
+<li><code>Annotated[str, Field(min_length=1, max_length=...)]</code> attaches validation rules to the <code>str</code> type: the question must be a non-empty string within a length bound. This is the cost-control lever — the one input a caller controls — being bounded declaratively.</li>
+<li>The <code>-&gt; AskResponse</code> return type means FastAPI serializes your returned object to JSON, guaranteeing the response matches the documented schema.</li>
+<li><code>Citation(<strong>c)</code> constructs a <code>Citation</code> model from a dict <code>c</code> by unpacking its keys as keyword arguments — the same <code></strong></code> unpacking from §10, here building an object instead of a dict.</li>
+</ul>
+<p>This &quot;validate at the edge&quot; pattern means the *interior* of the system can trust its data. By the time <code>search</code> runs, <code>body.question</code> is guaranteed to be a reasonable string.</p>
+<hr>
+<h2 id="16-putting-it-together-the-full-pipeline">16. Putting it together: the full pipeline</h2>
+<p>Now that you&#x27;ve seen the pieces, here&#x27;s how they compose into a system. Each stage is a module you can run on its own, and each imports the one before it.</p>
+<pre><code class="language-plaintext">ingest.py  →  chunk.py  →  embed.py  →  rag.py  →  app.py
+  load        split        vectorize    retrieve   serve
+  corpus      into         + store      + ask       over
+  to text     chunks       in pgvector  Claude      HTTP</code></pre>
+<p><strong>1. Ingest</strong> (<code>ingest.py</code>) turns a folder of mixed files into clean <code>Document</code>s, dispatching on extension (§8) and using <code>pathlib</code> (§7):</p>
+<pre><code class="language-python">documents = load_corpus(CORPUS_ROOT)</code></pre>
+<p><strong>2. Chunk</strong> (<code>chunk.py</code>) splits each document into overlapping, token-sized <code>Chunk</code>s using a closure with <code>nonlocal</code> (§9):</p>
+<pre><code class="language-python">chunks = chunk_corpus(documents)</code></pre>
+<p><strong>3. Embed</strong> (<code>embed.py</code>) turns chunk text into vectors (with retries, §13) and stores them in Postgres inside a <code>with</code> block (§12):</p>
+<pre><code class="language-python">embeddings = embed_batches(client, texts, tracker)
+with psycopg.connect(DB_URL) as conn:
+    register_vector(conn)
+    doc_ids = upsert_documents(conn, documents)
+    store_chunks(conn, chunks, embeddings, doc_ids)</code></pre>
+<p><strong>4. Retrieve + answer</strong> (<code>rag.py</code>) embeds the question (cached, §11), finds the nearest chunks, and asks Claude over them, streaming the result (§10):</p>
+<pre><code class="language-python">with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+    register_vector(conn)
+    hits = rerank_search(conn, question)
+text, citations = answer(question, hits)</code></pre>
+<p><strong>5. Serve</strong> (<code>app.py</code>) wraps all of it in a validated HTTP API (§15):</p>
+<pre><code class="language-python">@app.post(&quot;/ask&quot;)
+def ask(request: Request, body: AskRequest) -&gt; AskResponse:
+    ...</code></pre>
+<h3 id="what-to-do-next">What to do next</h3>
+<ul>
+<li><strong>Read the real files</strong> in the order above. You now have the vocabulary to follow every line. The comments in those files explain the *domain* decisions (why 256-token chunks, why hybrid search) — this tutorial covered the *Python*.</li>
+<li><strong>Run a stage</strong> and read its output: <code>uv run ingest.py</code> prints corpus stats, <code>uv run chunk.py</code> prints sample chunks.</li>
+<li><strong>Trace one query</strong> end to end: start in <code>app.py</code>&#x27;s <code>ask</code>, follow it into <code>rag.py</code>&#x27;s <code>search</code> → <code>embed_query</code> → the SQL, then <code>answer</code> → Claude.</li>
+<li><strong>Make a small change</strong> and see what happens: adjust <code>TOP_K</code> in <code>rag.py</code>, or add a new file extension to <code>EXTRACTORS</code> in <code>ingest.py</code>.</li>
+</ul>
+<p>The best way to learn Python is to modify code that already works. This repository is a good place to do exactly that.</p>
+<footer>Generated from <code>PYTHON_TUTORIAL.md</code> in the rag-system repository.</footer>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>if (window.hljs) hljs.highlightAll();</script>
+</body>
+</html>
