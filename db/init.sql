@@ -39,3 +39,30 @@ CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 -- Inverted index for full-text search (the @@ operator / ts_rank).
 CREATE INDEX IF NOT EXISTS chunks_content_tsv_idx
     ON chunks USING gin (content_tsv);
+
+-- One row per judge run (one invocation of evals/answer_system/judge.py). `config`
+-- records the knobs that define the run (judge model, eval file, RAG settings) so a
+-- result is reproducible from its run row + git_sha.
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    git_sha     TEXT        NOT NULL,           -- HEAD at run time; "-dirty" if uncommitted
+    config      JSONB       NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per (run, eval question). `scores`/`rationales` are keyed by axial-code
+-- dimension (A-E) — only the dimensions that question was judged on. cost is the USD
+-- of this question's judge calls; latency_ms is their wall time.
+CREATE TABLE IF NOT EXISTS eval_results (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id       BIGINT NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+    question_id  INT    NOT NULL,               -- id from rag_system_human_eval.jsonl
+    question     TEXT   NOT NULL,
+    answer       TEXT   NOT NULL,               -- the RAG answer that was judged
+    scores       JSONB  NOT NULL,               -- {"A": true, "C": false}
+    rationales   JSONB  NOT NULL,               -- {"A": "...", "C": "..."}
+    cost         NUMERIC NOT NULL,              -- USD, judge calls for this question
+    latency_ms   INT     NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, question_id)
+);
