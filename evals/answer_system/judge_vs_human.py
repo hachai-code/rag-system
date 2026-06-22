@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 JUDGMENTS = Path(__file__).parent / "judgments.jsonl"
+METRICS = Path(__file__).parent / "judge_metrics.json"
 
 # (eval_id, dimension, human_pass, source note from the .txt)
 HUMAN = [
@@ -54,24 +55,41 @@ def main() -> None:
         for dim, v in row["verdicts"].items():
             verdicts[(row["id"], dim)] = v["passed"]
 
-    pairs, missing = [], []
+    pairs, rows, missing = [], [], []
     print(f"{'id':>3} {'dim':>3} {'human':>6} {'judge':>6}  note")
     for eid, dim, human_pass, note in HUMAN:
         judge_pass = verdicts.get((eid, dim))
         if judge_pass is None:
-            missing.append((eid, dim))
+            missing.append([eid, dim])
             continue
         pairs.append((human_pass, judge_pass))
+        rows.append({"id": eid, "dim": dim, "human": human_pass, "judge": judge_pass})
         mark = "ok " if human_pass == judge_pass else "DIFF"
         print(f"{eid:>3} {dim:>3} {'PASS' if human_pass else 'FAIL':>6} "
               f"{'PASS' if judge_pass else 'FAIL':>6}  {mark} {note}")
 
     n = len(pairs)
     agree = sum(h == j for h, j in pairs)
+    result = {
+        "n": n,
+        "agreement": round(agree / n, 3),
+        "cohens_kappa": round(cohens_kappa(pairs), 3),
+        "confusion": {
+            "human_pass_judge_pass": sum(h and j for h, j in pairs),
+            "human_pass_judge_fail": sum(h and not j for h, j in pairs),
+            "human_fail_judge_pass": sum(not h and j for h, j in pairs),
+            "human_fail_judge_fail": sum(not h and not j for h, j in pairs),
+        },
+        "disagreements": [r for r in rows if r["human"] != r["judge"]],
+        "missing": missing,
+    }
+    METRICS.write_text(json.dumps(result, indent=2) + "\n")
+
     print(f"\nn = {n} labelled (id, dimension) pairs"
           + (f"  ·  missing from judgments: {missing}" if missing else ""))
     print(f"agreement = {agree}/{n} = {agree / n:.0%}")
-    print(f"cohen's kappa = {cohens_kappa(pairs):.2f}")
+    print(f"cohen's kappa = {result['cohens_kappa']:.2f}")
+    print(f"wrote {METRICS}")
 
 
 if __name__ == "__main__":
