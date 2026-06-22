@@ -218,13 +218,17 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
     ]
 
 
-def answer(question: str, hits: list[dict]) -> tuple[str, list[dict]]:
-    """Ask Claude over the retrieved chunks and return (answer_text, citations)."""
+def answer(question: str, hits: list[dict],
+           model: str = CLAUDE_MODEL, system: str = SYSTEM_PROMPT) -> tuple[str, list[dict]]:
+    """Ask Claude over the retrieved chunks and return (answer_text, citations).
+
+    `model` and `system` default to the production constants; the eval runner overrides
+    them to test a config/prompt version (evals/run.py)."""
     client = anthropic.Anthropic()
     response = client.messages.create(
-        model=CLAUDE_MODEL,
+        model=model,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=_messages(question, hits),
     )
     text = "".join(block.text for block in response.content)
