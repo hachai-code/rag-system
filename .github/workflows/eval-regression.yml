@@ -1,0 +1,30 @@
+name: Eval regression
+
+# The cheap deterministic tests run on every PR (ci.yml). This gate is expensive — it
+# runs the live LLM eval — so it fires only on PRs that touch the prompts or retrieval
+# config, the things that actually move answer quality. It blocks merge if a well-sampled
+# category's pass rate drops more than the threshold vs. the committed baseline.
+on:
+  pull_request:
+    paths:
+      - 'evals/configs/**'        # retrieval config versions
+      - 'evals/prompts/**'        # prompt variants
+      - 'rag.py'                  # production system prompt + retrieval logic
+      - 'evals/answer_system/judge.py'  # judge rubrics
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    env:
+      # Real secrets — this gate hits the live corpus (retrieval) and the API (answer +
+      # judge). Add these in repo Settings -> Secrets and variables -> Actions.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run python -m evals.check_regression --config evals/configs/baseline.json --split dev

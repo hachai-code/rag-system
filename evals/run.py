@@ -69,6 +69,32 @@ def load_config(path: str) -> tuple[dict, str]:
     return stored, gen_prompt
 
 
+def evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt):
+    """Run retrieve -> answer -> judge for each item; yield one result dict per item.
+    Skips (and logs) an item whose calls fail so one bad item can't abort the run.
+    Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
+    for item in items:
+        try:
+            hits = search(conn, item["question"], k=top_k)
+            if not hits or hits[0]["distance"] > threshold:
+                ans = NO_ANSWER
+            else:
+                ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt)
+            t0 = time.perf_counter()
+            scores, rationales, in_tok, out_tok = {}, {}, 0, 0
+            for code in item["axial_codes"]:
+                verdict, it, ot = judge_with_usage(client, code, item["question"], ans, item["ideal_answer"])
+                scores[code], rationales[code] = verdict.passed, verdict.rationale
+                in_tok, out_tok = in_tok + it, out_tok + ot
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            cost = round(in_tok * IN_PRICE + out_tok * OUT_PRICE, 6)
+        except Exception as e:
+            print(f"  [skip] item {item['id']}: {type(e).__name__}: {e}")
+            continue
+        yield {"id": item["id"], "question": item["question"], "answer": ans,
+               "scores": scores, "rationales": rationales, "cost": cost, "latency_ms": latency_ms}
+
+
 def run_summary(conn, run_id) -> dict:
     """Per-dimension pass rate, total cost, and mean latency for one run."""
     rows = conn.execute(
@@ -141,36 +167,18 @@ def main() -> None:
         conn.commit()
 
         judged = 0
-        for item in items:
-            try:
-                hits = search(conn, item["question"], k=top_k)
-                if not hits or hits[0]["distance"] > threshold:
-                    ans = NO_ANSWER
-                else:
-                    ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt)
-                t0 = time.perf_counter()
-                scores, rationales, in_tok, out_tok = {}, {}, 0, 0
-                for code in item["axial_codes"]:
-                    verdict, it, ot = judge_with_usage(client, code, item["question"], ans, item["ideal_answer"])
-                    scores[code], rationales[code] = verdict.passed, verdict.rationale
-                    in_tok, out_tok = in_tok + it, out_tok + ot
-                latency_ms = int((time.perf_counter() - t0) * 1000)
-                cost = round(in_tok * IN_PRICE + out_tok * OUT_PRICE, 6)
-            except Exception as e:
-                print(f"  [skip] item {item['id']}: {type(e).__name__}: {e}")
-                continue
-
+        for r in evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (run_id, item["id"], item["question"], ans,
-                 Jsonb(scores), Jsonb(rationales), cost, latency_ms),
+                (run_id, r["id"], r["question"], r["answer"],
+                 Jsonb(r["scores"]), Jsonb(r["rationales"]), r["cost"], r["latency_ms"]),
             )
             conn.commit()
             judged += 1
-            marks = " ".join(f"{c}:{'P' if p else 'F'}" for c, p in scores.items())
-            print(f"  [{judged:>2}/{len(items)}] item {item['id']:>2}  {marks}  ${cost:.4f}  {item['question'][:36]}")
+            marks = " ".join(f"{c}:{'P' if p else 'F'}" for c, p in r["scores"].items())
+            print(f"  [{judged:>2}/{len(items)}] item {r['id']:>2}  {marks}  ${r['cost']:.4f}  {r['question'][:36]}")
 
         print_summary(conn, run_id, prev_id, cfg)
 
