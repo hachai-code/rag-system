@@ -18,8 +18,14 @@ evals/**/*.html
 # Human-eval working files
 evals/**/rag_system_human_eval*
 
+# Pulled RAG traces for open coding (regenerate with: trace_viewer.py pull)
+evals/traces.jsonl
+
 # Obsidian vault config
 .obsidian/
 
 # macOS Finder metadata
 .DS_Store
+
+# Pulled Langfuse traces for open coding (re-pull with: langfuse_viewer.py pull)
+evals/langfuse_traces.jsonl
