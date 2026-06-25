@@ -76,6 +76,12 @@ RUBRICS = {
         "Citations present where claims are made; terminology/style followed (e.g. 'innerdance' lowercase, joined).",
         "Missing citation markers, or violates terminology/style rules.",
     ),
+    "F": (
+        "Corpus & Data Quality",
+        "Does the answer reflect clean underlying data — correcting known transcription errors (it's KAP, not 'CAP') and keeping speaker turns straight rather than crediting one speaker's words to another?",
+        "Uses corrected terminology (KAP) and attributes statements to the right speaker/turn; does not propagate a transcription artifact.",
+        "Repeats a transcription error (e.g. 'CAP' for KAP) as if correct, or conflates/mis-attributes speaker turns (a student's line credited to the teacher).",
+    ),
 }
 
 SYSTEM = """You are a strict evaluator for a RAG system that answers questions over the 'innerdance' corpus (a body-based consciousness practice plus a neuroscience book it draws on).

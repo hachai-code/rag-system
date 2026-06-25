@@ -1,6 +1,6 @@
 # Answer-System Judge Rubrics
 
-_Date: 2026-06-19 · Derived from `failure-taxonomy.md`. One binary rubric per axial category (A–E), each scored by its own single-purpose LLM judge._
+_Date: 2026-06-19 (F added 2026-06-25) · Derived from `failure-taxonomy.md` / `failure-taxonomy-v2.md`. One binary rubric per axial category (A–F), each scored by its own single-purpose LLM judge._
 
 **Why one judge per category, not one mega-prompt:** narrow judges are more reliable and let you track TPR/TNR per category. A single prompt scoring all five at once blurs which dimension failed and which judge to trust. Keep them separate.
 
@@ -46,6 +46,15 @@ _Weight this for the health-adjacent cluster (blood pressure, endometriosis, ins
 
 - **PASS** — Citations included where claims are made; terminology/style conventions followed (e.g. "innerdance" lowercase, joined).
 - **FAIL** — Missing citation markers, or violates terminology/style rules.
+
+## F — Corpus & Data Quality · _quality (upstream)_
+
+**Criterion:** Does the answer reflect clean underlying data — correcting known transcription errors (it's KAP, not "CAP") and keeping speaker turns straight rather than crediting one speaker's words to another?
+
+- **PASS** — Uses corrected terminology (KAP) and attributes statements to the right speaker/turn; does not propagate a transcription artifact.
+- **FAIL** — Repeats a transcription error (e.g. "CAP" for KAP) as if correct, or conflates/mis-attributes speaker turns (a student's line credited to the teacher).
+
+_The defect is upstream (diarization, transcript cleaning), but it surfaces in the answer — a propagated "CAP" or a mis-attributed line is the observable FAIL. Fixing the data once clears many of these at the source. See code F in `failure-taxonomy-v2.md`._
 
 ---
 
