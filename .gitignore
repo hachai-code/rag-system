@@ -27,5 +27,9 @@ evals/traces.jsonl
 # macOS Finder metadata
 .DS_Store
 
+# Local agent tooling
+.headroom/
+.serena/
+
 # Pulled Langfuse traces for open coding (re-pull with: langfuse_viewer.py pull)
 evals/langfuse_traces.jsonl
