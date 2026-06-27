@@ -31,6 +31,11 @@ class Chunk:
     section: str         # carried from the document
     date: str            # carried from the document
     heading: str | None  # nearest preceding heading line, if any
+    # transcript-only metadata (None for books/PDFs/etc.):
+    start: float | None = None               # earliest utterance time in chunk (s)
+    end: float | None = None                 # latest utterance time (s)
+    speakers: tuple[str, ...] | None = None  # distinct speakers present
+    primary_speaker: str | None = None       # speaker with the most text in chunk
 
 
 def looks_like_heading(line: str) -> bool:
@@ -53,34 +58,60 @@ def looks_like_heading(line: str) -> bool:
     return uppercase_ratio > 0.6
 
 
-def _tail_overlap(lines: list[tuple[str, int]], overlap: int) -> tuple[list, int]:
-    """Return the trailing (line, n_tokens) pairs summing to about `overlap`."""
-    kept: list[tuple[str, int]] = []
+def _tail_overlap(units: list[tuple], overlap: int) -> tuple[list, int]:
+    """Return the trailing units (text, n_tokens, ...) summing to about `overlap`."""
+    kept: list[tuple] = []
     total = 0
-    for line, n in reversed(lines):
+    for unit in reversed(units):
+        n = unit[1]
         if kept and total + n > overlap:
             break
-        kept.append((line, n))
+        kept.append(unit)
         total += n
     kept.reverse()
     return kept, total
 
 
+def _time_and_speakers(units: list[tuple]):
+    """Chunk-level (start, end, speakers, primary_speaker) from its units.
+    All None for non-transcript units, which carry no timing."""
+    timed = [(s, e) for _, _, s, e, _ in units if s is not None]
+    if not timed:
+        return None, None, None, None
+    chars: dict[str, int] = {}
+    for text, _, _, _, speaker in units:
+        if speaker:
+            chars[speaker] = chars.get(speaker, 0) + len(text)
+    speakers = tuple(sorted(chars)) or None
+    primary = max(chars, key=chars.get) if chars else None
+    return min(s for s, _ in timed), max(e for _, e in timed), speakers, primary
+
+
 def chunk_document(
     doc: Document, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
 ) -> list[Chunk]:
-    """Greedily pack lines into ~chunk_size-token chunks with ~overlap carryover."""
-    lines = [line for line in doc.text.split("\n") if line.strip()]
+    """Greedily pack units into ~chunk_size-token chunks with ~overlap carryover.
+
+    A unit is (text, n_tokens, start, end, speaker). Transcripts pack by timed
+    utterance so each chunk carries its time range + speakers; other documents
+    pack by text line, with start/end/speaker = None."""
+    if doc.segments is not None:
+        units = [(s.text, count_tokens(s.text), s.start, s.end, s.speaker)
+                 for s in doc.segments]
+    else:
+        units = [(line, count_tokens(line), None, None, None)
+                 for line in doc.text.split("\n") if line.strip()]
 
     chunks: list[Chunk] = []
-    current: list[tuple[str, int]] = []  # (line, n_tokens) in the chunk so far
+    current: list[tuple] = []  # units in the chunk so far
     current_tokens = 0
     heading: str | None = None        # most recent heading seen
     chunk_heading: str | None = None  # heading in effect when this chunk began
 
     def flush() -> None:
         nonlocal current, current_tokens, chunk_heading
-        content = "\n".join(line for line, _ in current)
+        content = "\n".join(text for text, *_ in current)
+        start, end, speakers, primary = _time_and_speakers(current)
         chunks.append(
             Chunk(
                 source=doc.source,
@@ -91,24 +122,27 @@ def chunk_document(
                 section=doc.section,
                 date=doc.date,
                 heading=chunk_heading,
+                start=start,
+                end=end,
+                speakers=speakers,
+                primary_speaker=primary,
             )
         )
         current, current_tokens = _tail_overlap(current, overlap)
         chunk_heading = heading
 
-    for line in lines:
-        n = count_tokens(line)
+    for unit in units:
+        text, n = unit[0], unit[1]
         if not current:
             chunk_heading = heading
-        # A single line longer than chunk_size becomes its own oversized chunk
-        # rather than being split mid-line. Doesn't occur in this corpus
-        # (largest paragraph is ~430 tokens), but degrades gracefully if it did.
+        # A single unit longer than chunk_size becomes its own oversized chunk
+        # rather than being split mid-line. Rare here; degrades gracefully.
         if current and current_tokens + n > chunk_size:
             flush()
-        current.append((line, n))
+        current.append(unit)
         current_tokens += n
-        if looks_like_heading(line):
-            heading = line
+        if looks_like_heading(text):
+            heading = text
 
     if current:
         flush()

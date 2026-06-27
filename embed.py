@@ -101,7 +101,16 @@ def store_chunks(
     """Replace all chunks for the embedded documents with the fresh ones."""
     conn.execute("DELETE FROM chunks WHERE document_id = ANY(%s)", (list(doc_ids.values()),))
     rows = [
-        (doc_ids[c.source], c.chunk_index, c.content, embedding, Jsonb({"heading": c.heading}))
+        (
+            doc_ids[c.source], c.chunk_index, c.content, embedding,
+            Jsonb({
+                "heading": c.heading,
+                "start": c.start,
+                "end": c.end,
+                "speakers": list(c.speakers) if c.speakers else None,
+                "primary_speaker": c.primary_speaker,
+            }),
+        )
         for c, embedding in zip(chunks, embeddings)
     ]
     conn.cursor().executemany(

@@ -34,6 +34,15 @@ def count_tokens(text: str) -> int:
 
 
 @dataclass
+class Segment:
+    """One timed ASR utterance from a transcript line, used for chunk metadata."""
+    start: float          # seconds from the start of the talk
+    end: float
+    speaker: str | None   # "pi" | "participant" | None
+    text: str             # the utterance, speaker label kept inline ("pi: ...")
+
+
+@dataclass
 class Document:
     source: str    # path relative to the corpus root
     title: str     # human-readable name (from the filename)
@@ -41,6 +50,7 @@ class Document:
     section: str   # top-level corpus folder, e.g. "Maia" or "Documents"
     text: str      # cleaned plain text
     n_tokens: int  # estimated token count of `text`
+    segments: list[Segment] | None = None  # timed utterances, transcripts only
 
 
 # --- format-specific extractors: each returns raw (uncleaned) text -----------
@@ -133,12 +143,46 @@ def reflow_transcript(text: str) -> str:
     return "\n".join(sentences)
 
 
+# One transcript line: "[start --> end] speaker: words".
+SEGMENT_LINE = re.compile(r"^\[(\S+) --> (\S+)\]\s*(.*)$")
+SPEAKER = re.compile(r"^(pi|participant):")
+
+
+def _to_seconds(stamp: str) -> float:
+    """'12:46.847' (mm:ss.s) or '1:22:53.218' (h:mm:ss.s) -> seconds."""
+    parts = stamp.split(":")
+    seconds = float(parts[-1]) + int(parts[-2]) * 60
+    if len(parts) == 3:
+        seconds += int(parts[0]) * 3600
+    return seconds
+
+
+def parse_transcript(text: str) -> list[Segment]:
+    """Pull start/end/speaker out of each timecoded line for chunk metadata. The
+    speaker label stays in the text (parity with reflow_transcript, which only
+    strips the timecode), so the embedded content is unchanged."""
+    segments = []
+    for line in text.splitlines():
+        m = SEGMENT_LINE.match(line.strip())
+        if not m:
+            continue
+        body = m.group(3).strip()
+        spk = SPEAKER.match(body)
+        segments.append(
+            Segment(_to_seconds(m.group(1)), _to_seconds(m.group(2)),
+                    spk.group(1) if spk else None, body)
+        )
+    return segments
+
+
 # --- loading -----------------------------------------------------------------
 
 
 def load_document(path: Path, root: Path) -> Document:
     raw = EXTRACTORS[path.suffix.lower()](path)
+    segments = None
     if is_transcript(raw):
+        segments = parse_transcript(raw)
         raw = reflow_transcript(raw)
     text = clean_text(raw)
     relative = path.relative_to(root)
@@ -149,6 +193,7 @@ def load_document(path: Path, root: Path) -> Document:
         section=relative.parts[0] if len(relative.parts) > 1 else "(root)",
         text=text,
         n_tokens=count_tokens(text),
+        segments=segments,
     )
 
 
