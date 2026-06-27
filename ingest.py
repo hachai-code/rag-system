@@ -35,11 +35,12 @@ def count_tokens(text: str) -> int:
 
 @dataclass
 class Segment:
-    """One timed ASR utterance from a transcript line, used for chunk metadata."""
-    start: float          # seconds from the start of the talk
-    end: float
-    speaker: str | None   # "pi" | "participant" | None
-    text: str             # the utterance, speaker label kept inline ("pi: ...")
+    """One unit of attributed text: a timed ASR utterance (transcripts) or a
+    sentence from a speaker's turn (the dialogue PDF, which carries no timing)."""
+    start: float | None   # seconds from the start of the talk; None for the PDF
+    end: float | None
+    speaker: str | None   # "pi" | "participant" | "doc romy" | None
+    text: str             # the text, speaker label kept inline ("pi: ...")
 
 
 @dataclass
@@ -175,16 +176,78 @@ def parse_transcript(text: str) -> list[Segment]:
     return segments
 
 
+# --- dialogue PDF ------------------------------------------------------------
+
+# transformation_medicine_ebook.pdf is a two-voice dialogue: Pi's lines are set
+# in italic (Delicious-Italic), Doc Romy's in roman (Delicious-Roman). Plain
+# text extraction loses the font, so we read per-span fonts to recover who's
+# speaking — the book carries no inline name labels.
+DIALOGUE_PDF = "transformation_medicine_ebook.pdf"
+_PAGE_NUMBER = re.compile(r"\d[\d\s]*\|[\d\s]*")  # footer page numbers leak as italic spans: "12 | 13"
+_FRONT_MATTER = re.compile(r"ISBN|Copyright|Published by", re.IGNORECASE)
+
+
+def extract_dialogue_pdf(path: Path) -> tuple[str, list[Segment]]:
+    """Recover Pi (italic) / Doc Romy (roman) turns from the dialogue ebook.
+
+    pypdf's text extraction drops font info, so we use a visitor to tag each
+    span by font, merge consecutive same-speaker spans into turns, then split
+    each turn into sentences — the grain chunk.py packs by."""
+    reader = PdfReader(path)
+    spans: list[tuple[str, str]] = []
+
+    def visit(text, cm, tm, fontdict, size):
+        font = (fontdict or {}).get("/BaseFont", "")
+        if "Delicious-Italic" in font:
+            speaker = "pi"
+        elif "Delicious-Roman" in font:
+            speaker = "doc romy"
+        else:
+            return  # bold headings + Perpetua running headers/page numbers
+        cleaned = _PAGE_NUMBER.sub(" ", text)
+        if cleaned.strip():
+            spans.append((speaker, cleaned))
+
+    for page in reader.pages:
+        page.extract_text(visitor_text=visit)
+
+    turns: list[tuple[str, str]] = []
+    for speaker, text in spans:
+        if turns and turns[-1][0] == speaker:
+            turns[-1] = (speaker, turns[-1][1] + text)
+        else:
+            turns.append((speaker, text))
+
+    # Drop title/copyright front matter: start at the first substantial,
+    # non-boilerplate turn (the "My name is Romy" self-introduction).
+    start = next(
+        (i for i, (_, t) in enumerate(turns) if len(t.strip()) > 300 and not _FRONT_MATTER.search(t)),
+        0,
+    )
+
+    segments: list[Segment] = []
+    for speaker, text in turns[start:]:
+        flowing = " ".join(text.split())
+        for i, sentence in enumerate(re.split(r"(?<=[.!?]) +", flowing)):
+            if sentence.strip():
+                label = f"{speaker}: " if i == 0 else ""
+                segments.append(Segment(None, None, speaker, label + sentence))
+    return "\n".join(s.text for s in segments), segments
+
+
 # --- loading -----------------------------------------------------------------
 
 
 def load_document(path: Path, root: Path) -> Document:
-    raw = EXTRACTORS[path.suffix.lower()](path)
-    segments = None
-    if is_transcript(raw):
-        segments = parse_transcript(raw)
-        raw = reflow_transcript(raw)
-    text = clean_text(raw)
+    if path.name == DIALOGUE_PDF:
+        text, segments = extract_dialogue_pdf(path)
+    else:
+        raw = EXTRACTORS[path.suffix.lower()](path)
+        segments = None
+        if is_transcript(raw):
+            segments = parse_transcript(raw)
+            raw = reflow_transcript(raw)
+        text = clean_text(raw)
     relative = path.relative_to(root)
     return Document(
         source=str(relative),
@@ -202,6 +265,8 @@ def load_corpus(root: Path) -> list[Document]:
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in EXTRACTORS:
             continue
+        if path.suffix.lower() == ".pdf" and path.with_suffix(".md").exists():
+            continue  # OCR'd Markdown sidecar supersedes the image-only PDF
         print(f"  loading {path.relative_to(root)} ...", flush=True)
         documents.append(load_document(path, root))
     return documents

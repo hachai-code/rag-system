@@ -74,17 +74,18 @@ def _tail_overlap(units: list[tuple], overlap: int) -> tuple[list, int]:
 
 def _time_and_speakers(units: list[tuple]):
     """Chunk-level (start, end, speakers, primary_speaker) from its units.
-    All None for non-transcript units, which carry no timing."""
-    timed = [(s, e) for _, _, s, e, _ in units if s is not None]
-    if not timed:
-        return None, None, None, None
+    Speakers come from any labelled unit (transcripts and the dialogue PDF);
+    start/end only from units that also carry timing (transcripts)."""
     chars: dict[str, int] = {}
     for text, _, _, _, speaker in units:
         if speaker:
             chars[speaker] = chars.get(speaker, 0) + len(text)
     speakers = tuple(sorted(chars)) or None
     primary = max(chars, key=chars.get) if chars else None
-    return min(s for s, _ in timed), max(e for _, e in timed), speakers, primary
+    timed = [(s, e) for _, _, s, e, _ in units if s is not None]
+    start = min(s for s, _ in timed) if timed else None
+    end = max(e for _, e in timed) if timed else None
+    return start, end, speakers, primary
 
 
 def chunk_document(
