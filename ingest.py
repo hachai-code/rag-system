@@ -144,7 +144,7 @@ def load_document(path: Path, root: Path) -> Document:
     relative = path.relative_to(root)
     return Document(
         source=str(relative),
-        title=path.stem,
+        title=path.stem.removesuffix(".timestamped"),  # "Foo.timestamped.txt" -> "Foo"
         date=date.fromtimestamp(path.stat().st_mtime).isoformat(),
         section=relative.parts[0] if len(relative.parts) > 1 else "(root)",
         text=text,
