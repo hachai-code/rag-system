@@ -15,7 +15,13 @@ from pydantic import ValidationError
 
 from app import AskRequest, _no_relevant_hits
 from evals.metrics import recall_at_k, reciprocal_rank
-from rag import RELEVANCE_THRESHOLD, _citations
+from rag import (
+    RELEVANCE_THRESHOLD,
+    Fact,
+    GroundedAnswer,
+    _citations,
+    _grounded_citations,
+)
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
 # the citation's document_index, exactly as the live code does.
@@ -53,6 +59,37 @@ def test_citation_maps_back_to_its_hit():
 
 def test_blocks_without_citations_produce_no_records():
     assert _citations([_block("Unsupported claim.", [])], HITS) == []
+
+
+# The OpenAI-compatible path rebuilds citations from structured facts instead of the
+# Anthropic Citations API. _grounded_citations must hold the same invariant: every
+# returned cited_text is a substring of the chunk it points at, and chunk_index maps
+# back to the right hit. The `context` is what the model_validator reads to filter
+# quotes, exactly as the live create() call passes it.
+def _grounded(facts: list[dict]) -> GroundedAnswer:
+    return GroundedAnswer.model_validate(
+        {"facts": facts}, context={"chunks": [h["content"] for h in HITS]}
+    )
+
+
+def test_grounded_citation_is_grounded_and_maps_to_its_hit():
+    grounded = _grounded(
+        [{"statement": "It reroutes.", "chunk_index": 0,
+          "substring_quote": ["dopamine reroutes to the old brain"]}]
+    )
+    text, [cite] = _grounded_citations(grounded, HITS)
+    assert text == "It reroutes."
+    assert cite["cited_text"] in HITS[0]["content"]
+    assert (cite["chunk_id"], cite["title"], cite["source"]) == (11, "Day 1", "day1.rtf")
+
+
+def test_ungrounded_quote_is_dropped():
+    grounded = _grounded(
+        [{"statement": "Fabricated.", "chunk_index": 0,
+          "substring_quote": ["a quote the chunk never contained"]}]
+    )
+    _, citations = _grounded_citations(grounded, HITS)
+    assert citations == []
 
 
 def test_no_answer_gate():

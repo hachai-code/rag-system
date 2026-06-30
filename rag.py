@@ -8,11 +8,13 @@ import os
 from functools import lru_cache
 
 import anthropic
+import instructor
 import psycopg
 import voyageai
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
+from pydantic import BaseModel, ValidationInfo, model_validator
 
 load_dotenv()
 
@@ -55,6 +57,13 @@ RERANK_DEPTH = 20
 SOURCE_WINDOW = 3
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
+# Provider seam: which adapter answer() dispatches to and which model it runs. Both
+# default to the Anthropic baseline, so production is unchanged until config flips
+# them (Phase 2/3). "anthropic" uses the native Citations API; "openai-compat" reaches
+# OpenRouter through instructor and rebuilds citations from structured output.
+GEN_PROVIDER = "anthropic"
+GEN_MODEL = CLAUDE_MODEL
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Per-query cost is bounded on every axis: the question length is capped at the API
 # boundary (see app.py), retrieval sends a fixed TOP_K chunks as context, and
 # MAX_TOKENS caps the generated output. So the worst-case spend per /ask is a known
@@ -198,6 +207,17 @@ def _messages(question: str, hits: list[dict]) -> list[dict]:
     ]
 
 
+def _openai_user_content(question: str, hits: list[dict]) -> str:
+    """The OpenAI-compatible user turn: chunks numbered so the model can cite them by
+    index, then the question. The numbering matches `hits` order, so a returned
+    `chunk_index` maps straight back to hits[index] — the OpenAI-compat analogue of
+    Anthropic's `document_index`."""
+    numbered = "\n\n".join(
+        f"[{i}] {hit['content']}" for i, hit in enumerate(hits)
+    )
+    return f"{numbered}\n\nQuestion: {question}"
+
+
 def _citations(content: list, hits: list[dict]) -> list[dict]:
     """Collect one record per citation, tying each cited claim back to its chunk.
 
@@ -218,21 +238,93 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
     ]
 
 
-def answer(question: str, hits: list[dict],
-           model: str = CLAUDE_MODEL, system: str = SYSTEM_PROMPT) -> tuple[str, list[dict]]:
-    """Ask Claude over the retrieved chunks and return (answer_text, citations).
+# --- OpenAI-compatible citation rebuild ---------------------------------------
+# Off-Anthropic there is no Citations API, so the model is asked for structured
+# claims and we re-impose the same "cited quote is a verbatim substring of its
+# chunk" invariant ourselves (the rule test_assertions.py checks). This mirrors
+# instructor's exact-citations example: a model_validator(mode="after") drops any
+# quote it can't find in the source chunk, passed in via context=.
+# (https://python.useinstructor.com/examples/exact_citations/)
 
-    `model` and `system` default to the production constants; the eval runner overrides
-    them to test a config/prompt version (evals/run.py)."""
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=model,
+
+class Fact(BaseModel):
+    """One claim plus the verbatim spans of a single chunk that support it.
+
+    `chunk_index` selects which retrieved chunk this fact cites; the validator
+    keeps only quotes that actually appear in that chunk's text, dropping anything
+    the model paraphrased or invented."""
+
+    statement: str
+    chunk_index: int
+    substring_quote: list[str]
+
+    @model_validator(mode="after")
+    def keep_grounded_quotes(self, info: ValidationInfo) -> "Fact":
+        chunks = (info.context or {}).get("chunks", [])
+        chunk = chunks[self.chunk_index] if 0 <= self.chunk_index < len(chunks) else ""
+        self.substring_quote = [q for q in self.substring_quote if q in chunk]
+        return self
+
+
+class GroundedAnswer(BaseModel):
+    facts: list[Fact]
+
+
+def _grounded_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, list[dict]]:
+    """Assemble (answer_text, citations) from validated facts.
+
+    The prose is the facts' statements joined in order; each surviving quote becomes
+    one citation record tied back to its chunk — the same dict shape `_citations()`
+    returns, so callers downstream don't care which adapter produced it. Quotes were
+    already filtered to verbatim chunk substrings by Fact's validator, so the
+    cited_text-in-chunk invariant holds by construction."""
+    text = " ".join(fact.statement for fact in grounded.facts)
+    citations = [
+        {
+            "claim": fact.statement,
+            "cited_text": quote,
+            "chunk_id": hits[fact.chunk_index]["id"],
+            "title": hits[fact.chunk_index]["title"],
+            "source": hits[fact.chunk_index]["source"],
+        }
+        for fact in grounded.facts
+        for quote in fact.substring_quote
+    ]
+    return text, citations
+
+
+def answer(question: str, hits: list[dict],
+           model: str = GEN_MODEL, system: str = SYSTEM_PROMPT,
+           provider: str = GEN_PROVIDER) -> tuple[str, list[dict]]:
+    """Answer over the retrieved chunks and return (answer_text, citations).
+
+    Dispatches by `provider`: "anthropic" uses the native Citations API (the baseline
+    path, unchanged); "openai-compat" reaches an OpenAI-compatible endpoint through
+    instructor and rebuilds citations from structured output. `model`, `system`, and
+    `provider` default to the production constants; the eval runner overrides them to
+    test a config (evals/run.py)."""
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=_messages(question, hits),
+        )
+        text = "".join(block.text for block in response.content)
+        return text, _citations(response.content, hits)
+
+    client = instructor.from_provider(f"openai/{model}", base_url=OPENROUTER_BASE_URL)
+    grounded = client.create(
+        response_model=GroundedAnswer,
+        context={"chunks": [hit["content"] for hit in hits]},
         max_tokens=MAX_TOKENS,
-        system=system,
-        messages=_messages(question, hits),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": _openai_user_content(question, hits)},
+        ],
     )
-    text = "".join(block.text for block in response.content)
-    return text, _citations(response.content, hits)
+    return _grounded_citations(grounded, hits)
 
 
 def answer_stream(question: str, hits: list[dict]):
