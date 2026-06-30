@@ -1,0 +1,59 @@
+{
+  "n": 11,
+  "agreement": 0.455,
+  "cohens_kappa": 0.029,
+  "confusion": {
+    "human_pass_judge_pass": 2,
+    "human_pass_judge_fail": 1,
+    "human_fail_judge_pass": 5,
+    "human_fail_judge_fail": 3
+  },
+  "disagreements": [
+    {
+      "id": 2,
+      "dim": "B",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 11,
+      "dim": "D",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 32,
+      "dim": "C",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 34,
+      "dim": "B",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 54,
+      "dim": "A",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 60,
+      "dim": "B",
+      "human": true,
+      "judge": false
+    }
+  ],
+  "missing": [
+    [
+      70,
+      "F"
+    ],
+    [
+      74,
+      "E"
+    ]
+  ]
+}
