@@ -55,7 +55,7 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
         register_vector(conn)
         for r in evaluate(conn, client,
                           items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
-                          cfg["generation"]["model"], gen_prompt):
+                          cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt):
             succeeded += 1
             for dim, passed in r["scores"].items():
                 per_dim[dim].append(passed)

@@ -1,6 +1,6 @@
 {
   "name": "baseline",
   "retrieval": {"top_k": 5, "relevance_threshold": 0.7},
-  "generation": {"model": "claude-sonnet-4-6", "prompt_file": null},
+  "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro", "prompt_file": null},
   "judge": {"model": "claude-opus-4-8"}
 }

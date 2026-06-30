@@ -53,6 +53,7 @@ def load_config(path: str) -> tuple[dict, str]:
     fingerprint = json.dumps({
         "top_k": ret["top_k"],
         "relevance_threshold": ret["relevance_threshold"],
+        "gen_provider": gen["provider"],
         "gen_model": gen["model"],
         "prompt_sha": prompt_sha,
         "judge_model": jud["model"],
@@ -63,13 +64,14 @@ def load_config(path: str) -> tuple[dict, str]:
         "name": cfg.get("name", Path(path).stem),
         "hash": sha(fingerprint)[:12],
         "retrieval": ret,
-        "generation": {"model": gen["model"], "prompt_file": prompt_file, "prompt_sha": prompt_sha[:12]},
+        "generation": {"provider": gen["provider"], "model": gen["model"],
+                       "prompt_file": prompt_file, "prompt_sha": prompt_sha[:12]},
         "judge": {"model": jud["model"], "rubric_sha": rubric_sha[:12]},
     }
     return stored, gen_prompt
 
 
-def evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt):
+def evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt):
     """Run retrieve -> answer -> judge for each item; yield one result dict per item.
     Skips (and logs) an item whose calls fail so one bad item can't abort the run.
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
@@ -79,7 +81,7 @@ def evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt):
             if not hits or hits[0]["distance"] > threshold:
                 ans = NO_ANSWER
             else:
-                ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt)
+                ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt, provider=gen_provider)
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0
             for code in item["axial_codes"]:
@@ -154,6 +156,7 @@ def main() -> None:
 
     top_k = cfg["retrieval"]["top_k"]
     threshold = cfg["retrieval"]["relevance_threshold"]
+    gen_provider = cfg["generation"]["provider"]
     gen_model = cfg["generation"]["model"]
     client = instructor.from_provider(f"anthropic/{cfg['judge']['model']}", mode=instructor.Mode.TOOLS)
 
@@ -167,7 +170,7 @@ def main() -> None:
         conn.commit()
 
         judged = 0
-        for r in evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt):
+        for r in evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)
