@@ -314,7 +314,14 @@ def answer(question: str, hits: list[dict],
         text = "".join(block.text for block in response.content)
         return text, _citations(response.content, hits)
 
-    client = instructor.from_provider(f"openai/{model}", base_url=OPENROUTER_BASE_URL)
+    # api_key is OPENROUTER_API_KEY passed as the OpenAI key against OpenRouter's base
+    # URL — instructor's generic openai provider would otherwise read OPENAI_API_KEY,
+    # which isn't the key this path uses.
+    client = instructor.from_provider(
+        f"openai/{model}",
+        base_url=OPENROUTER_BASE_URL,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    )
     grounded = client.create(
         response_model=GroundedAnswer,
         context={"chunks": [hit["content"] for hit in hits]},
@@ -327,23 +334,33 @@ def answer(question: str, hits: list[dict],
     return _grounded_citations(grounded, hits)
 
 
-def answer_stream(question: str, hits: list[dict]):
+def answer_stream(question: str, hits: list[dict],
+                  model: str = GEN_MODEL, provider: str = GEN_PROVIDER):
     """Yield the answer incrementally, then one citation record per source.
 
-    Text streams token by token for a live UI. Citations are only final once their
-    text block closes, so we read them from the completed message after the text is
-    done — each yielded as {"type": "text"|"citation", ...}."""
-    client = anthropic.Anthropic()
-    with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=_messages(question, hits),
-    ) as stream:
-        for text in stream.text_stream:
-            yield {"type": "text", "text": text}
-        final = stream.get_final_message()
-    for cite in _citations(final.content, hits):
+    Both adapters keep the same text-first / citations-last contract. The Anthropic
+    path streams token by token; the OpenAI-compatible path can't token-stream a
+    structured response, so it returns the prose in one text event then the citations
+    (citations-at-end — live streaming isn't required). Each item is yielded as
+    {"type": "text"|"citation", ...}."""
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        with client.messages.stream(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            messages=_messages(question, hits),
+        ) as stream:
+            for text in stream.text_stream:
+                yield {"type": "text", "text": text}
+            final = stream.get_final_message()
+        for cite in _citations(final.content, hits):
+            yield {"type": "citation", **cite}
+        return
+
+    text, citations = answer(question, hits, model=model, provider=provider)
+    yield {"type": "text", "text": text}
+    for cite in citations:
         yield {"type": "citation", **cite}
 
 
