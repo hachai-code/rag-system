@@ -72,9 +72,10 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MAX_TOKENS = 1024
 # The OpenAI-compatible path serializes the answer AND every verbatim citation quote as
 # JSON in one response, which runs several times longer than the prose MAX_TOKENS the
-# Citations API needs (that returns quotes as metadata, not inline). A JSON response cut
-# off mid-structure is unparseable, so a rich, many-quote answer needs real headroom here.
-STRUCTURED_MAX_TOKENS = 8192
+# Citations API needs (that returns quotes as metadata, not inline) — a rich answer can
+# reach ~5k tokens. A JSON response cut off mid-structure is unparseable, and DeepSeek's
+# length varies run to run, so this is set well above the typical size to leave margin.
+STRUCTURED_MAX_TOKENS = 16384
 # No citation instructions here: the Citations feature handles attribution itself,
 # returning the exact source quote for each claim, so we only ask for grounding.
 SYSTEM_PROMPT = (
