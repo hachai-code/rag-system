@@ -70,6 +70,11 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # ceiling, not open-ended — and RELEVANCE_THRESHOLD skips this call entirely when
 # nothing relevant was retrieved.
 MAX_TOKENS = 1024
+# The OpenAI-compatible path serializes the answer AND every verbatim citation quote as
+# JSON in one response, which runs several times longer than the prose MAX_TOKENS the
+# Citations API needs (that returns quotes as metadata, not inline). A JSON response cut
+# off mid-structure is unparseable, so a rich, many-quote answer needs real headroom here.
+STRUCTURED_MAX_TOKENS = 8192
 # No citation instructions here: the Citations feature handles attribution itself,
 # returning the exact source quote for each claim, so we only ask for grounding.
 SYSTEM_PROMPT = (
@@ -316,16 +321,21 @@ def answer(question: str, hits: list[dict],
 
     # api_key is OPENROUTER_API_KEY passed as the OpenAI key against OpenRouter's base
     # URL — instructor's generic openai provider would otherwise read OPENAI_API_KEY,
-    # which isn't the key this path uses.
+    # which isn't the key this path uses. Mode.JSON, not the default TOOLS: DeepSeek on
+    # OpenRouter doesn't reliably emit tool calls for the schema (it returns the fields as
+    # prose), so we ask for JSON in the content instead — the mode instructor recommends
+    # for OpenAI-compatible models with flaky function-calling.
     client = instructor.from_provider(
         f"openai/{model}",
         base_url=OPENROUTER_BASE_URL,
         api_key=os.environ["OPENROUTER_API_KEY"],
+        mode=instructor.Mode.JSON,
     )
     grounded = client.create(
         response_model=GroundedAnswer,
         context={"chunks": [hit["content"] for hit in hits]},
-        max_tokens=MAX_TOKENS,
+        max_tokens=STRUCTURED_MAX_TOKENS,
+        max_retries=2,  # re-ask if DeepSeek returns unparseable/truncated JSON
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": _openai_user_content(question, hits)},

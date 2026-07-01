@@ -36,14 +36,16 @@ IN_PRICE, OUT_PRICE = 0.435 / 1_000_000, 0.87 / 1_000_000
 
 def judge_client(provider: str, model: str):
     """Build the instructor judge client for the configured provider: Anthropic native,
-    or an OpenAI-compatible model (e.g. DeepSeek V4 Pro via OpenRouter). Same Mode.TOOLS
-    structured-output path either way, so judge_with_usage doesn't care which it got."""
+    or an OpenAI-compatible model (e.g. DeepSeek V4 Pro via OpenRouter). Both fill the
+    Verdict via structured output, so judge_with_usage doesn't care which it got."""
     if provider == "openai-compat":
+        # Mode.JSON, not TOOLS: DeepSeek on OpenRouter is unreliable at tool-calling, so
+        # ask for the Verdict as JSON in the content (matches the generation path in rag.py).
         return instructor.from_provider(
             f"openai/{model}",
             base_url=OPENROUTER_BASE_URL,
             api_key=os.environ["OPENROUTER_API_KEY"],
-            mode=instructor.Mode.TOOLS,
+            mode=instructor.Mode.JSON,
         )
     return instructor.from_provider(f"anthropic/{model}", mode=instructor.Mode.TOOLS)
 

@@ -1,6 +1,6 @@
 {
   "name": "baseline",
   "retrieval": {"top_k": 5, "relevance_threshold": 0.7},
-  "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash", "prompt_file": null},
+  "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro", "prompt_file": null},
   "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro"}
 }
