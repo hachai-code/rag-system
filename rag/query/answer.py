@@ -36,7 +36,8 @@ SYSTEM_PROMPT = (
     "connects information across the documents rather than listing separate facts. "
     "Stay true to the source's own wording and meaning: prefer the documents' terms "
     "and phrasing, and do not add interpretations, inferences, or claims that the "
-    "documents do not state."
+    "documents do not state. "
+    "Answer directly; do not open with a preamble about your sources"
 )
 
 
