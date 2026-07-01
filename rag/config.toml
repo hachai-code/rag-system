@@ -25,7 +25,7 @@ source_window = 3           # context chunks shown each side of a cited chunk on
 gen_provider = "openai-compat"            # prod runs DeepSeek via OpenRouter
 gen_model = "deepseek/deepseek-v4-pro"
 answer_format = "prose"                   # "prose" (synthesized answer) or "claims" (structured, per-sentence citations)
-max_tokens = 1024
+max_tokens = 4096
 structured_max_tokens = 4096              # the JSON-claims path runs longer than raw prose
 
 [ocr]
