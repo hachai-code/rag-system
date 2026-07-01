@@ -12,9 +12,22 @@ export default function Home() {
   const [openChip, setOpenChip] = useState<number | null>(null);
   const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
+  const [format, setFormat] = useState<"prose" | "claims">("prose");
 
-  async function ask(e: React.FormEvent) {
+  function ask(e: React.FormEvent) {
     e.preventDefault();
+    run(format);
+  }
+
+  // Switch the answer between long prose and per-claim citations. Each format is a
+  // separate backend generation, so flipping re-runs the current question.
+  function toggleFormat() {
+    const next = format === "prose" ? "claims" : "prose";
+    setFormat(next);
+    if (answer) run(next);
+  }
+
+  async function run(fmt: "prose" | "claims") {
     if (!question.trim() || loading) return;
     setAnswer("");
     setCitations([]);
@@ -25,7 +38,7 @@ export default function Home() {
     const res = await fetch(`${API_URL}/ask/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, format: fmt }),
     });
 
     // Read the SSE stream: frames are separated by a blank line, each one a
@@ -89,9 +102,20 @@ export default function Home() {
       </form>
 
       {answer && (
-        <article className="mb-8 whitespace-pre-wrap leading-relaxed">
-          <AnswerBody answer={answer} citations={citations} openSource={openSource} />
-        </article>
+        <>
+          <div className="mb-2 flex justify-end">
+            <button
+              onClick={toggleFormat}
+              disabled={loading}
+              className="text-sm text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {format === "prose" ? "Show as claims + citations" : "Show as prose"}
+            </button>
+          </div>
+          <article className="mb-8 whitespace-pre-wrap leading-relaxed">
+            <AnswerBody answer={answer} citations={citations} openSource={openSource} />
+          </article>
+        </>
       )}
 
       {citations.length > 0 && (

@@ -5,7 +5,7 @@ Run: uv run fastapi dev rag/app.py
 
 import json
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .db import connect
-from .query.answer import GEN_PROVIDER, answer, answer_stream
+from .query.answer import ANSWER_FORMAT, GEN_PROVIDER, answer, answer_stream
 from .query.retrieve import RELEVANCE_THRESHOLD, rerank_search, search, source_passage
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
@@ -57,6 +57,8 @@ langfuse = get_client()
 
 class AskRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
+    # "prose" or "claims"; only affects the openai-compat path (see answer.py).
+    format: Literal["prose", "claims"] = ANSWER_FORMAT
 
 
 class Source(BaseModel):
@@ -118,7 +120,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
             hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
-        text, citations = answer(body.question, hits)
+        text, citations = answer(body.question, hits, fmt=body.format)
         span.update(output=text)
         return AskResponse(
             answer=text,
@@ -148,7 +150,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                 hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
-            for event in answer_stream(body.question, hits):
+            for event in answer_stream(body.question, hits, fmt=body.format):
                 if event["type"] == "text":
                     answer_text.append(event["text"])
                 yield f"data: {json.dumps(event)}\n\n"

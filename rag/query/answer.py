@@ -33,7 +33,10 @@ SYSTEM_PROMPT = (
     "You answer questions about the innerdance corpus using only the provided "
     "documents. If the documents do not contain the answer, say you don't know. "
     "Write a thorough, detailed answer in flowing prose that synthesizes and "
-    "connects information across the documents rather than listing separate facts."
+    "connects information across the documents rather than listing separate facts. "
+    "Stay true to the source's own wording and meaning: prefer the documents' terms "
+    "and phrasing, and do not add interpretations, inferences, or claims that the "
+    "documents do not state."
 )
 
 
@@ -207,7 +210,8 @@ def answer(question: str, hits: list[dict],
 
 
 def answer_stream(question: str, hits: list[dict],
-                  model: str = GEN_MODEL, provider: str = GEN_PROVIDER):
+                  model: str = GEN_MODEL, provider: str = GEN_PROVIDER,
+                  fmt: str = ANSWER_FORMAT):
     """Yield the answer incrementally, then one citation record per source.
 
     Both adapters keep the text-first / citations-last contract. The OpenAI-compatible
@@ -228,7 +232,7 @@ def answer_stream(question: str, hits: list[dict],
             yield {"type": "citation", **cite}
         return
 
-    text, citations = answer(question, hits, model=model, provider=provider)
+    text, citations = answer(question, hits, model=model, provider=provider, fmt=fmt)
     yield {"type": "text", "text": text}
     for cite in citations:
         yield {"type": "citation", **cite}
