@@ -69,13 +69,17 @@ def _messages(question: str, hits: list[dict]) -> list[dict]:
     ]
 
 
-def _openai_user_content(question: str, hits: list[dict]) -> str:
-    """The OpenAI-compatible user turn: chunks numbered [i] so the model can cite them
-    by index (mapping back to hits[i]), then the question."""
-    numbered = "\n\n".join(
-        f"[{i}] {hit['content']}" for i, hit in enumerate(hits)
-    )
-    return f"{numbered}\n\nQuestion: {question}"
+def _openai_user_content(question: str, hits: list[dict], numbered: bool = True) -> str:
+    """The OpenAI-compatible user turn: the chunks, then the question.
+
+    The claims path numbers each chunk [i] so the model can cite it by index (mapping
+    back to hits[i]). Prose passes numbered=False: with no [i] markers in the input, the
+    model has nothing to echo, so its prose stays free of stray citation brackets."""
+    if numbered:
+        chunks = "\n\n".join(f"[{i}] {hit['content']}" for i, hit in enumerate(hits))
+    else:
+        chunks = "\n\n".join(hit["content"] for hit in hits)
+    return f"{chunks}\n\nQuestion: {question}"
 
 
 def _citations(content: list, hits: list[dict]) -> list[dict]:
@@ -122,7 +126,7 @@ def answer_prose(question: str, hits: list[dict],
         max_tokens=STRUCTURED_MAX_TOKENS,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": _openai_user_content(question, hits)},
+            {"role": "user", "content": _openai_user_content(question, hits, numbered=False)},
         ],
     )
     return resp.choices[0].message.content, _proof(hits)
