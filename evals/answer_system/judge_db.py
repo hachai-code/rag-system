@@ -28,7 +28,7 @@ from psycopg.types.json import Jsonb
 from evals.answer_system.judge import (
     EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, rag_answer,
 )
-from rag import CLAUDE_MODEL, DB_URL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
+from rag import DB_URL, GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
 
 # Judge token price (DeepSeek V4 Pro on OpenRouter): $0.435 / $0.87 per 1M in/out.
 IN_PRICE, OUT_PRICE = 0.435 / 1_000_000, 0.87 / 1_000_000
@@ -89,7 +89,7 @@ def main() -> None:
         "judge_model": JUDGE_MODEL,
         "mode": "tools",
         "eval_file": EVAL_FILE.name,
-        "rag_model": CLAUDE_MODEL,
+        "rag_model": GEN_MODEL,
         "top_k": TOP_K,
         "relevance_threshold": RELEVANCE_THRESHOLD,
     }

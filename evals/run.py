@@ -29,7 +29,7 @@ from psycopg.types.json import Jsonb
 
 from evals.answer_system.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
 from evals.answer_system.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
-from rag import DB_URL, SYSTEM_PROMPT, answer, search
+from rag import DB_URL, SYSTEM_PROMPT, answer, rerank_search, search
 
 
 def sha(text: str) -> str:
@@ -77,10 +77,11 @@ def evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
     for item in items:
         try:
-            hits = search(conn, item["question"], k=top_k)
-            if not hits or hits[0]["distance"] > threshold:
+            gate = search(conn, item["question"], k=1)  # cheap coverage check only
+            if not gate or gate[0]["distance"] > threshold:
                 ans = NO_ANSWER
             else:
+                hits = rerank_search(conn, item["question"], k=top_k)  # hybrid + RRF + rerank
                 ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt, provider=gen_provider)
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0

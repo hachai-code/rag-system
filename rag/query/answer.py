@@ -12,19 +12,18 @@ import instructor
 from instructor.core import IncompleteOutputException
 from pydantic import BaseModel
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+from ..config import CONFIG
 
-# Provider seam: which adapter answer() dispatches to and which model it runs. Both
-# default to the Anthropic baseline (see README), so production is unchanged until
-# config flips them.
-GEN_PROVIDER = "anthropic"
-GEN_MODEL = CLAUDE_MODEL
+# Provider seam: which adapter answer() dispatches to and which model it runs, both
+# from config.toml. Prod runs the openai-compat/DeepSeek path (see README).
+GEN_PROVIDER = CONFIG.gen_provider
+GEN_MODEL = CONFIG.gen_model
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-MAX_TOKENS = 1024
+MAX_TOKENS = CONFIG.max_tokens
 # The structured (JSON claims) response runs longer than raw prose (~2.5k tokens for a
 # full answer), so the OpenAI-compatible path needs a higher ceiling.
-STRUCTURED_MAX_TOKENS = 4096
+STRUCTURED_MAX_TOKENS = CONFIG.structured_max_tokens
 
 SYSTEM_PROMPT = (
     "You answer questions about the innerdance corpus using only the provided "

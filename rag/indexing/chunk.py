@@ -5,13 +5,13 @@ book), so boundaries never fall mid-word. See README "Pipeline order".
 Run `uv run python -m rag.indexing.chunk` to inspect a sample.
 """
 
-import os
 from dataclasses import dataclass
 
+from ..config import CONFIG
 from .ingest import CORPUS_ROOT, Document, count_tokens, load_corpus
 
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "256"))  # 256 won the size sweep (see README)
-CHUNK_OVERLAP = 50  # tokens carried from the end of one chunk into the next
+CHUNK_SIZE = CONFIG.chunk_size          # 256 won the size sweep (see README)
+CHUNK_OVERLAP = CONFIG.chunk_overlap    # tokens carried from the end of one chunk into the next
 
 
 @dataclass

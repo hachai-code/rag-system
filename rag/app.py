@@ -19,7 +19,7 @@ from slowapi.util import get_remote_address
 
 from .db import connect
 from .query.answer import GEN_PROVIDER, answer, answer_stream
-from .query.retrieve import RELEVANCE_THRESHOLD, search, source_passage
+from .query.retrieve import RELEVANCE_THRESHOLD, rerank_search, search, source_passage
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -62,7 +62,7 @@ class AskRequest(BaseModel):
 class Source(BaseModel):
     title: str
     source: str
-    distance: float
+    distance: float | None  # None for keyword-only hits (no vector distance)
 
 
 class Citation(BaseModel):
@@ -97,7 +97,8 @@ def _no_relevant_hits(hits: list[dict]) -> bool:
 def _retrieved_meta(hits: list[dict]) -> list[dict]:
     """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
-        {"id": h["id"], "title": h["title"], "distance": round(h["distance"], 4)}
+        {"id": h["id"], "title": h["title"],
+         "distance": round(h["distance"], 4) if h.get("distance") is not None else None}
         for h in hits
     ]
 
@@ -111,18 +112,19 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
         as_type="span", name="rag-ask", input=body.question
     ) as span:
         with connect() as conn:
-            hits = search(conn, body.question)
+            gate = search(conn, body.question, k=1)  # cheap coverage check only
+            if _no_relevant_hits(gate):
+                span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
+                return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
+            hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
-        if _no_relevant_hits(hits):
-            span.update(output=NO_ANSWER)
-            return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
         text, citations = answer(body.question, hits)
         span.update(output=text)
         return AskResponse(
             answer=text,
             citations=[Citation(**c) for c in citations],
             sources=[
-                Source(title=h["title"], source=h["source"], distance=h["distance"])
+                Source(title=h["title"], source=h["source"], distance=h.get("distance"))
                 for h in hits
             ],
         )
@@ -138,12 +140,13 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
             as_type="span", name="rag-ask-stream", input=body.question
         ) as span:
             with connect() as conn:
-                hits = search(conn, body.question)
+                gate = search(conn, body.question, k=1)  # cheap coverage check only
+                if _no_relevant_hits(gate):
+                    span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
+                    yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
+                    return
+                hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
-            if _no_relevant_hits(hits):
-                span.update(output=NO_ANSWER)
-                yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
-                return
             answer_text = []
             for event in answer_stream(body.question, hits):
                 if event["type"] == "text":

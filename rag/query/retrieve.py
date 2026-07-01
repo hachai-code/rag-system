@@ -9,26 +9,28 @@ from functools import lru_cache
 import psycopg
 import voyageai
 
-VOYAGE_MODEL = "voyage-4"
+from ..config import CONFIG
+
+VOYAGE_MODEL = CONFIG.voyage_model
 EMBED_DIM = 1024
-TOP_K = 5
+TOP_K = CONFIG.top_k
 
 # Distance beyond which the corpus is treated as not covering the question (README).
-RELEVANCE_THRESHOLD = 0.7
+RELEVANCE_THRESHOLD = CONFIG.relevance_threshold
 
 # Reciprocal Rank Fusion: candidates pulled per retriever, and the paper's k=60.
-FUSE_DEPTH = 60
-RRF_K = 60
+FUSE_DEPTH = CONFIG.fuse_depth
+RRF_K = CONFIG.rrf_k
 
 # Keyword is the noisier retriever, so it's down-weighted (README "Retrieval design").
-VECTOR_WEIGHT = 1.0
-KEYWORD_WEIGHT = 0.5
+VECTOR_WEIGHT = CONFIG.vector_weight
+KEYWORD_WEIGHT = CONFIG.keyword_weight
 
-RERANK_MODEL = "rerank-2.5"
-RERANK_DEPTH = 20
+RERANK_MODEL = CONFIG.rerank_model
+RERANK_DEPTH = CONFIG.rerank_depth
 
 # Chunks of surrounding context to show on each side of a cited chunk (click-through).
-SOURCE_WINDOW = 3
+SOURCE_WINDOW = CONFIG.source_window
 
 _voyage = voyageai.Client(max_retries=2)
 
