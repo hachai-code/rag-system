@@ -1,52 +1,41 @@
-"""Split the loaded corpus into overlapping, metadata-rich chunks for embedding.
+"""Stage 2: split `Document`s into overlapping, metadata-rich chunks.
 
-Run: uv run chunk.py
-
-Reads documents via ingest.load_corpus, splits each into ~512-token chunks with
-~50-token overlap, carries the document metadata + nearest heading onto every
-chunk, and prints a sample spread across the corpus for hand inspection.
-
-The splitting unit is the *line*, which is the right grain for this corpus:
-for the Maia transcripts a line is one timestamped utterance, for the EPUB book
-a line is one paragraph. We never split within a line, so chunk boundaries fall
-between whole lines rather than mid-word.
+Splits by whole lines (a timestamped utterance for transcripts, a paragraph for the
+book), so boundaries never fall mid-word. See README "Pipeline order".
+Run `uv run python -m rag.indexing.chunk` to inspect a sample.
 """
 
 import os
 from dataclasses import dataclass
 
-from ingest import Document, count_tokens, load_corpus, CORPUS_ROOT
+from .ingest import CORPUS_ROOT, Document, count_tokens, load_corpus
 
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "256"))  # 256 won the size sweep (chunking-experiments.md)
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "256"))  # 256 won the size sweep (see README)
 CHUNK_OVERLAP = 50  # tokens carried from the end of one chunk into the next
 
 
 @dataclass
 class Chunk:
     source: str          # document path; ties back to documents.source
-    chunk_index: int     # position within the document
+    chunk_index: int
     content: str
     n_tokens: int
-    title: str           # carried from the document
-    section: str         # carried from the document
-    date: str            # carried from the document
+    title: str
+    section: str
+    date: str
     heading: str | None  # nearest preceding heading line, if any
     # transcript-only metadata (None for books/PDFs/etc.):
-    start: float | None = None               # earliest utterance time in chunk (s)
-    end: float | None = None                 # latest utterance time (s)
-    speakers: tuple[str, ...] | None = None  # distinct speakers present
-    primary_speaker: str | None = None       # speaker with the most text in chunk
+    start: float | None = None
+    end: float | None = None
+    speakers: tuple[str, ...] | None = None
+    primary_speaker: str | None = None
 
 
 def looks_like_heading(line: str) -> bool:
     """A short, mostly-uppercase line — catches the book's PART/chapter headings.
 
-    Heuristic. Real headings here ("PART ONE - THE ARCHITECTURE") are short and
-    largely uppercase, while body prose almost never exceeds 60% uppercase. Two
-    exclusions come straight from the inspection: transcript utterance lines
-    start with a "[mm:ss]" timecode and are never headings, and the EPUB's
-    drop-cap chapter initials land on their own line as a single letter.
-    """
+    Excludes transcript lines (start with a "[mm:ss]" timecode) and the EPUB's
+    single-letter drop-cap chapter initials."""
     line = line.strip()
     if line.startswith("["):
         return False
@@ -74,8 +63,7 @@ def _tail_overlap(units: list[tuple], overlap: int) -> tuple[list, int]:
 
 def _time_and_speakers(units: list[tuple]):
     """Chunk-level (start, end, speakers, primary_speaker) from its units.
-    Speakers come from any labelled unit (transcripts and the dialogue PDF);
-    start/end only from units that also carry timing (transcripts)."""
+    Speakers come from any labelled unit; start/end only from timed units."""
     chars: dict[str, int] = {}
     for text, _, _, _, speaker in units:
         if speaker:
@@ -93,9 +81,8 @@ def chunk_document(
 ) -> list[Chunk]:
     """Greedily pack units into ~chunk_size-token chunks with ~overlap carryover.
 
-    A unit is (text, n_tokens, start, end, speaker). Transcripts pack by timed
-    utterance so each chunk carries its time range + speakers; other documents
-    pack by text line, with start/end/speaker = None."""
+    A unit is (text, n_tokens, start, end, speaker): a timed utterance for
+    transcripts, a text line (start/end/speaker = None) otherwise."""
     if doc.segments is not None:
         units = [(s.text, count_tokens(s.text), s.start, s.end, s.speaker)
                  for s in doc.segments]
@@ -177,8 +164,8 @@ def print_stats(chunks: list[Chunk]) -> None:
 
 
 def print_samples(chunks: list[Chunk], count: int = 20) -> None:
-    """Print `count` chunks spread evenly across the corpus, head + tail of each,
-    so boundaries (where mid-sentence splits would show up) are visible."""
+    """Print `count` chunks spread across the corpus, head + tail of each, so
+    boundaries (where mid-sentence splits would show up) are visible."""
     step = max(1, len(chunks) // count)
     print("\n" + "=" * 70)
     print(f"{count} SAMPLE CHUNKS (every {step}th)")

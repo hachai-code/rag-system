@@ -85,7 +85,7 @@ evals/
   chunking-experiments.md  retrieval-change log
 ```
 
-The app/pipeline modules (`rag.py`, `app.py`, `ingest.py`, `chunk.py`, `embed.py`) stay at the repo root — the eval scripts import `rag` from there. Because they now sit in a package, run them as modules from the repo root (e.g. `uv run python -m evals.metrics`), and each anchors its data files with `Path(__file__).parent` so cwd doesn't matter. CI is `.github/workflows/ci.yml`.
+The app/pipeline modules live in the `rag/` package (`rag/query/retrieve.py`, `rag/query/answer.py`, `rag/app.py`, `rag/indexing/{ingest,chunk,embed}.py`); `rag/__init__.py` re-exports the public API, so the eval scripts still `import rag` unchanged. Run everything as modules from the repo root (e.g. `uv run python -m evals.metrics`), and each script anchors its data files with `Path(__file__).parent` so cwd doesn't matter. CI is `.github/workflows/ci.yml`.
 
 ### Extraction to `ai-utils` at month's end (target 2026-06-30)
 

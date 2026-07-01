@@ -1,11 +1,6 @@
-"""Load the innerdance corpus into clean text + metadata, then print its shape.
+"""Stage 1: load the corpus into clean `Document`s. See README "Pipeline order".
 
-Run: uv run ingest.py
-
-This is the first stage of the RAG pipeline. It does NOT chunk or embed yet —
-its only job is to turn a folder of raw files (RTF, PDF, EPUB, HTML, Markdown)
-into a list of `Document`s with clean text, and to print enough stats that you
-understand what you're working with before you start chunking.
+Run `uv run python -m rag.indexing.ingest` to print the corpus shape.
 """
 
 import re
@@ -23,9 +18,7 @@ from striprtf.striprtf import rtf_to_text
 
 CORPUS_ROOT = Path.home() / "Documents" / "innerdance corpus"
 
-# tiktoken is OpenAI's tokenizer, not Claude's. We use it only for a fast,
-# offline *estimate* of length so we can size chunks. Claude's real token
-# counts will differ by a few percent — fine for understanding shape.
+# tiktoken is OpenAI's tokenizer; used only for a fast offline length estimate.
 _encoder = tiktoken.get_encoding("o200k_base")
 
 
@@ -35,22 +28,22 @@ def count_tokens(text: str) -> int:
 
 @dataclass
 class Segment:
-    """One unit of attributed text: a timed ASR utterance (transcripts) or a
-    sentence from a speaker's turn (the dialogue PDF, which carries no timing)."""
-    start: float | None   # seconds from the start of the talk; None for the PDF
+    """One unit of attributed text: a timed ASR utterance, or a sentence of a
+    speaker's turn in the dialogue PDF (which carries no timing)."""
+    start: float | None
     end: float | None
     speaker: str | None   # "pi" | "participant" | "doc romy" | None
-    text: str             # the text, speaker label kept inline ("pi: ...")
+    text: str             # speaker label kept inline ("pi: ...")
 
 
 @dataclass
 class Document:
     source: str    # path relative to the corpus root
-    title: str     # human-readable name (from the filename)
+    title: str
     date: str      # ISO date the file was last modified
-    section: str   # top-level corpus folder, e.g. "Maia" or "Documents"
-    text: str      # cleaned plain text
-    n_tokens: int  # estimated token count of `text`
+    section: str   # top-level corpus folder, e.g. "Maia"
+    text: str
+    n_tokens: int
     segments: list[Segment] | None = None  # timed utterances, transcripts only
 
 
@@ -113,27 +106,20 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# Matches an ASR timecode like "[00:01.000 --> 00:03.500]" or with an hour
-# component "[01:24:49.540 --> 01:24:54.540]".
+# ASR timecode: "[00:01.000 --> 00:03.500]", optionally with an hour component.
 TIMECODE = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?\.\d+ --> \d{1,2}:\d{2}(?::\d{2})?\.\d+\]")
 
 
 def is_transcript(text: str) -> bool:
-    """True for the Maia transcripts, which open with a timecode. The EPUB and
-    PDFs don't, so they're left untouched."""
+    """True for the Maia transcripts, which open with a timecode."""
     return bool(TIMECODE.match(text.lstrip()))
 
 
 def reflow_transcript(text: str) -> str:
-    """Turn timecoded ASR utterances into flowing prose.
+    """Turn timecoded ASR utterances into flowing, sentence-split prose.
 
-    The transcripts arrive as one timecoded fragment per line:
-        [27:16.7 --> 27:23.8]  music might be the most powerful tool
-    The timecodes are ~40% of the tokens and fragment every sentence, which
-    muddies the embeddings. We strip the codes, join the fragments into running
-    text, then split on sentence boundaries so the chunker still has lines to
-    pack.
-    """
+    The timecodes are ~40% of the tokens and fragment every sentence, which muddies
+    the embeddings; see README "Pipeline order"."""
     utterances = []
     for line in text.splitlines():
         utterance = TIMECODE.sub("", line).strip()
@@ -160,8 +146,7 @@ def _to_seconds(stamp: str) -> float:
 
 def parse_transcript(text: str) -> list[Segment]:
     """Pull start/end/speaker out of each timecoded line for chunk metadata. The
-    speaker label stays in the text (parity with reflow_transcript, which only
-    strips the timecode), so the embedded content is unchanged."""
+    speaker label stays in the text, so the embedded content is unchanged."""
     segments = []
     for line in text.splitlines():
         m = SEGMENT_LINE.match(line.strip())
@@ -178,21 +163,17 @@ def parse_transcript(text: str) -> list[Segment]:
 
 # --- dialogue PDF ------------------------------------------------------------
 
-# transformation_medicine_ebook.pdf is a two-voice dialogue: Pi's lines are set
-# in italic (Delicious-Italic), Doc Romy's in roman (Delicious-Roman). Plain
-# text extraction loses the font, so we read per-span fonts to recover who's
-# speaking — the book carries no inline name labels.
+# transformation_medicine_ebook.pdf is a two-voice dialogue: Pi's lines are italic
+# (Delicious-Italic), Doc Romy's roman (Delicious-Roman). Plain-text extraction loses
+# the font, so we read per-span fonts to recover who's speaking. See README.
 DIALOGUE_PDF = "transformation_medicine_ebook.pdf"
 _PAGE_NUMBER = re.compile(r"\d[\d\s]*\|[\d\s]*")  # footer page numbers leak as italic spans: "12 | 13"
 _FRONT_MATTER = re.compile(r"ISBN|Copyright|Published by", re.IGNORECASE)
 
 
 def extract_dialogue_pdf(path: Path) -> tuple[str, list[Segment]]:
-    """Recover Pi (italic) / Doc Romy (roman) turns from the dialogue ebook.
-
-    pypdf's text extraction drops font info, so we use a visitor to tag each
-    span by font, merge consecutive same-speaker spans into turns, then split
-    each turn into sentences — the grain chunk.py packs by."""
+    """Recover Pi (italic) / Doc Romy (roman) turns from the dialogue ebook, then
+    split each turn into sentences — the grain chunk.py packs by."""
     reader = PdfReader(path)
     spans: list[tuple[str, str]] = []
 

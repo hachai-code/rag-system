@@ -1,48 +1,33 @@
-"""FastAPI wrapper around the RAG pipeline: POST a question, get a grounded answer.
+"""FastAPI wrapper: POST a question, get a grounded answer. See README "API".
 
-Run: uv run fastapi dev app.py
-Then: curl -X POST localhost:8000/ask -H 'content-type: application/json' \
-        -d '{"question": "..."}'
+Run: uv run fastapi dev rag/app.py
 """
 
 import json
 import os
 from typing import Annotated
 
-import psycopg
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langfuse import get_client
 from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from rag import (
-    DB_URL,
-    GEN_PROVIDER,
-    RELEVANCE_THRESHOLD,
-    answer,
-    answer_stream,
-    search,
-    source_passage,
-)
+from .db import connect
+from .query.answer import GEN_PROVIDER, answer, answer_stream
+from .query.retrieve import RELEVANCE_THRESHOLD, search, source_passage
 
-# Reject over-long questions before they reach Voyage/Claude: a long prompt costs
-# more to embed and generate over, and is the one input a caller controls, so it's
-# the cost lever worth bounding. 1000 chars is generous for a real question.
+# Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
 
-# What we return when retrieval finds nothing relevant (see RELEVANCE_THRESHOLD):
-# refuse instead of letting Claude answer from nothing.
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
-# Rate limit per client IP. Storage is in-memory, so it's per-process — fine for a
-# single worker; point Limiter at Redis (storage_uri=...) if you run several.
+# Rate limit per client IP. In-memory storage → per-process; point Limiter at Redis
+# (storage_uri=...) to share across workers.
 limiter = Limiter(key_func=get_remote_address)
 RATE_LIMIT = "10/minute"
 
@@ -50,9 +35,8 @@ app = FastAPI(title="innerdance RAG")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# The frontend runs on a different origin, so the browser needs CORS. Defaults to
-# the local dev server; set FRONTEND_ORIGIN (comma-separated for more than one) to
-# the deployed frontend URL in production.
+# CORS: the frontend runs on a different origin. Set FRONTEND_ORIGIN (comma-separated)
+# to the deployed URL(s) in production.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000").split(","),
@@ -60,15 +44,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Tracing: with the LANGFUSE_* keys set, each /ask is one Langfuse trace — the
-# retrieved chunks as metadata, plus the generation call, auto-captured (model,
-# prompt, output, token usage) by the adapter's instrumentor. The Anthropic adapter
-# uses AnthropicInstrumentor; the OpenAI-compatible adapter uses the langfuse.openai
-# drop-in, which patches the openai module so the client instructor builds underneath
-# is traced and nests under the rag-ask span. Without keys, get_client() returns a
-# disabled client and the spans below become no-ops, so the app (and the tests that
-# import it) run unchanged. The server is long-lived, so we don't flush per request —
-# the SDK batches in the background and flushes at exit.
+# Langfuse tracing: with the LANGFUSE_* keys set, each /ask is one trace; the
+# generation call is auto-captured by the active provider's instrumentor (see README).
+# Without keys, get_client() is a disabled no-op, so the app runs unchanged.
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     if GEN_PROVIDER == "anthropic":
         AnthropicInstrumentor().instrument()
@@ -89,7 +67,7 @@ class Source(BaseModel):
 
 class Citation(BaseModel):
     claim: str  # the span of the answer this citation backs
-    cited_text: str  # the exact source quote, extracted by the API
+    cited_text: str  # the exact source quote
     chunk_id: int
     title: str
     source: str
@@ -117,25 +95,22 @@ def _no_relevant_hits(hits: list[dict]) -> bool:
 
 
 def _retrieved_meta(hits: list[dict]) -> list[dict]:
-    """Compact summary of what retrieval returned, for the trace — the full chunk
-    text would bloat every span, so we keep just id, title, and distance."""
+    """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
         {"id": h["id"], "title": h["title"], "distance": round(h["distance"], 4)}
         for h in hits
     ]
 
 
-# Sync `def` (not async): the Voyage/Claude/psycopg calls block, so FastAPI runs
-# this in a threadpool instead of stalling the event loop. `request: Request` is
-# unused by the body but required for slowapi to read the client IP.
+# Sync `def`: the Voyage/Claude/psycopg calls block, so FastAPI runs this in a
+# threadpool. `request: Request` is unused by the body but required for slowapi.
 @app.post("/ask")
 @limiter.limit(RATE_LIMIT)
 def ask(request: Request, body: AskRequest) -> AskResponse:
     with langfuse.start_as_current_observation(
         as_type="span", name="rag-ask", input=body.question
     ) as span:
-        with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-            register_vector(conn)
+        with connect() as conn:
             hits = search(conn, body.question)
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         if _no_relevant_hits(hits):
@@ -153,20 +128,16 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
         )
 
 
-# Server-Sent Events: the answer streams in as `text` events, then one `citation`
-# event per source once the message completes. The frontend reads these live.
+# Server-Sent Events: `text` events stream in, then one `citation` event per source.
 @app.post("/ask/stream")
 @limiter.limit(RATE_LIMIT)
 def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
-    # The span lives inside the generator: the Claude call happens lazily as the
-    # response streams, so the trace has to stay open until the stream is done for
-    # the generation to nest under it. Retrieval moves in here too, so it's traced.
+    # The span lives inside the generator so the streamed generation nests under it.
     def events():
         with langfuse.start_as_current_observation(
             as_type="span", name="rag-ask-stream", input=body.question
         ) as span:
-            with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-                register_vector(conn)
+            with connect() as conn:
                 hits = search(conn, body.question)
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             if _no_relevant_hits(hits):
@@ -183,10 +154,9 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-# Click-through to source: the chunk a citation points at, reconstructed in its
-# place in the document so the frontend can highlight it in context.
+# The chunk a citation points at, reconstructed in its place for the frontend.
 @app.get("/source/{chunk_id}")
 @limiter.limit(RATE_LIMIT)
 def source(request: Request, chunk_id: int) -> SourcePassage:
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+    with connect() as conn:
         return SourcePassage(**source_passage(conn, chunk_id))
