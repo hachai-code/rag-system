@@ -1,29 +1,24 @@
 """One-off: OCR the image-only slide PDFs into Markdown the pipeline can ingest.
 
-Run: uv run ocr_pdfs.py  (needs ANTHROPIC_API_KEY)
-
-Mandala.pdf and "Epilepsy and Brain Maps.pdf" are slideshow exports with their
-content baked into page images, so pypdf extracts only stray titles. We render
-each page with PyMuPDF and have Claude transcribe the slide (text + a one-line
-note on any diagram) into Markdown, written next to the PDF as <stem>.md.
-load_corpus then ingests the .md and skips the now-superseded .pdf.
+Mandala.pdf and "Epilepsy and Brain Maps.pdf" are slideshow exports whose content is
+baked into page images. We render each page and have a vision model transcribe it into
+Markdown, written next to the PDF as <stem>.md (which load_corpus then prefers).
+Run: uv run python -m rag.ocr  (needs OPENROUTER_API_KEY)
 """
 
 import base64
 import os
 from pathlib import Path
 
-import anthropic
 import fitz
-from dotenv import load_dotenv
+from openai import OpenAI
 
-from ingest import CORPUS_ROOT
-from rag import CLAUDE_MODEL
-
-load_dotenv()
+from .config import CONFIG
+from .indexing.ingest import CORPUS_ROOT
+from .query.answer import OPENROUTER_BASE_URL
 
 IMAGE_PDFS = ["Mandala.pdf", "Epilepsy and Brain Maps.pdf"]
-MAX_EDGE = 1600  # px long edge; Claude downsizes vision images past ~1568px anyway, and this keeps each well under the 10 MB request cap
+MAX_EDGE = 1600  # px long edge; keeps each page image well under model input limits
 
 PROMPT = (
     "This is one slide from a slideshow. Transcribe its text exactly as Markdown, "
@@ -33,23 +28,23 @@ PROMPT = (
 )
 
 
-def transcribe_page(client: anthropic.Anthropic, png: bytes) -> str:
+def transcribe_page(client: OpenAI, png: bytes) -> str:
     b64 = base64.standard_b64encode(png).decode()
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
+    resp = client.chat.completions.create(
+        model=CONFIG.ocr_model,
         max_tokens=1500,
         messages=[{
             "role": "user",
             "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
                 {"type": "text", "text": PROMPT},
             ],
         }],
     )
-    return resp.content[0].text.strip()
+    return resp.choices[0].message.content.strip()
 
 
-def ocr_pdf(client: anthropic.Anthropic, path: Path) -> str:
+def ocr_pdf(client: OpenAI, path: Path) -> str:
     doc = fitz.open(path)
     slides = []
     for i, page in enumerate(doc):
@@ -62,12 +57,12 @@ def ocr_pdf(client: anthropic.Anthropic, path: Path) -> str:
 
 
 def main() -> None:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SystemExit("ANTHROPIC_API_KEY is not set. Add it to .env or export it.")
-    client = anthropic.Anthropic()
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        raise SystemExit("OPENROUTER_API_KEY is not set. Add it to .env or export it.")
+    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
     for name in IMAGE_PDFS:
         pdf = CORPUS_ROOT / "Documents" / name
-        print(f"OCR {name} with {CLAUDE_MODEL} ...")
+        print(f"OCR {name} with {CONFIG.ocr_model} ...")
         md = ocr_pdf(client, pdf)
         out = pdf.with_suffix(".md")
         out.write_text(f"# {pdf.stem}\n\n{md}\n")

@@ -9,7 +9,7 @@ on:
     paths:
       - 'evals/configs/**'        # retrieval config versions
       - 'evals/prompts/**'        # prompt variants
-      - 'rag.py'                  # production system prompt + retrieval logic
+      - 'rag/**'                  # production system prompt + retrieval/generation logic
       - 'evals/answer_system/judge.py'  # judge rubrics
 
 jobs:

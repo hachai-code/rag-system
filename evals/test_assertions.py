@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app import AskRequest, _no_relevant_hits
+from rag.app import AskRequest, _no_relevant_hits
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
