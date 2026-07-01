@@ -19,7 +19,14 @@ from slowapi.util import get_remote_address
 
 from .db import connect
 from .query.answer import ANSWER_FORMAT, GEN_PROVIDER, answer, answer_stream
-from .query.retrieve import RELEVANCE_THRESHOLD, rerank_search, search, source_passage
+from .query.retrieve import (
+    RELEVANCE_THRESHOLD,
+    RERANK_DEPTH,
+    TOP_K,
+    rerank_search,
+    search,
+    source_passage,
+)
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -59,6 +66,9 @@ class AskRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
     # "prose" or "claims"; only affects the openai-compat path (see answer.py).
     format: Literal["prose", "claims"] = ANSWER_FORMAT
+    # Chunks handed to the generator (the citable pool). Defaults to config top_k;
+    # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
+    top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K
 
 
 class Source(BaseModel):
@@ -118,7 +128,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             if _no_relevant_hits(gate):
                 span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
+            hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         text, citations = answer(body.question, hits, fmt=body.format)
         span.update(output=text)
@@ -147,7 +157,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                     yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
                     return
-                hits = rerank_search(conn, body.question)  # hybrid + RRF + rerank
+                hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
             for event in answer_stream(body.question, hits, fmt=body.format):
