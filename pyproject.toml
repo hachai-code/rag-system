@@ -22,6 +22,7 @@ dependencies = [
     "opentelemetry-instrumentation-anthropic>=0.61.0",
     "instructor>=1.15.3",
     "pymupdf>=1.27.2.3",
+    "deepeval>=4.0.7",
 ]
 
 [dependency-groups]
