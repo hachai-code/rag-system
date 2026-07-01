@@ -19,12 +19,10 @@ export default function Home() {
     run(format);
   }
 
-  // Switch the answer between long prose and per-claim citations. Each format is a
-  // separate backend generation, so flipping re-runs the current question.
+  // Pick the answer format for the next question. Each format is a separate backend
+  // generation, so this only sets the mode — it takes effect on the next Ask.
   function toggleFormat() {
-    const next = format === "prose" ? "claims" : "prose";
-    setFormat(next);
-    if (answer) run(next);
+    setFormat((f) => (f === "prose" ? "claims" : "prose"));
   }
 
   async function run(fmt: "prose" | "claims") {
@@ -85,6 +83,16 @@ export default function Home() {
     <main className="mx-auto max-w-2xl px-4 py-10">
       <h1 className="mb-6 text-2xl font-semibold">innerdance RAG</h1>
 
+      <div className="mb-2 flex justify-end">
+        <button
+          onClick={toggleFormat}
+          disabled={loading}
+          className="text-sm text-blue-600 hover:underline disabled:opacity-50"
+        >
+          {format === "prose" ? "Switch to claims + citations" : "Switch to prose"}
+        </button>
+      </div>
+
       <form onSubmit={ask} className="mb-8 flex gap-2">
         <input
           value={question}
@@ -102,20 +110,9 @@ export default function Home() {
       </form>
 
       {answer && (
-        <>
-          <div className="mb-2 flex justify-end">
-            <button
-              onClick={toggleFormat}
-              disabled={loading}
-              className="text-sm text-blue-600 hover:underline disabled:opacity-50"
-            >
-              {format === "prose" ? "Show as claims + citations" : "Show as prose"}
-            </button>
-          </div>
-          <article className="mb-8 whitespace-pre-wrap leading-relaxed">
-            <AnswerBody answer={answer} citations={citations} openSource={openSource} />
-          </article>
-        </>
+        <article className="mb-8 whitespace-pre-wrap leading-relaxed">
+          <AnswerBody answer={answer} citations={citations} openSource={openSource} />
+        </article>
       )}
 
       {citations.length > 0 && (
