@@ -13,6 +13,7 @@ export default function Home() {
   const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
   const [format, setFormat] = useState<"prose" | "claims">("prose");
+  const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
 
   function ask(e: React.FormEvent) {
@@ -37,7 +38,7 @@ export default function Home() {
     const res = await fetch(`${API_URL}/ask/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, format: fmt, top_k: topK }),
+      body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
     });
 
     // Read the SSE stream: frames are separated by a blank line, each one a
@@ -84,6 +85,20 @@ export default function Home() {
     <main className="mx-auto max-w-4xl px-4 py-10">
 
       <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
+        <label
+          title="generation model"
+          className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
+        >
+          <span className="font-mono text-xs uppercase tracking-wide text-gray-500">model</span>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value as "pro" | "flash")}
+            className="rounded-full bg-white py-0.5 pl-2 pr-1 font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+          >
+            <option value="pro">pro</option>
+            <option value="flash">flash</option>
+          </select>
+        </label>
         <label
           title="top_k — chunks retrieved and handed to the generator"
           className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"

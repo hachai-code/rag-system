@@ -18,7 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .db import connect
-from .query.answer import ANSWER_FORMAT, GEN_PROVIDER, answer, answer_stream
+from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
 from .query.retrieve import (
     RELEVANCE_THRESHOLD,
     RERANK_DEPTH,
@@ -66,6 +66,8 @@ class AskRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
     # "prose" or "claims"; only affects the openai-compat path (see answer.py).
     format: Literal["prose", "claims"] = ANSWER_FORMAT
+    # Generation model picker; resolved to an OpenRouter id via GEN_MODELS.
+    model: Literal["pro", "flash"] = "pro"
     # Chunks handed to the generator (the citable pool). Defaults to config top_k;
     # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
     top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K
@@ -130,7 +132,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
             hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
-        text, citations = answer(body.question, hits, fmt=body.format)
+        text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
         span.update(output=text)
         return AskResponse(
             answer=text,
@@ -160,7 +162,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                 hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
-            for event in answer_stream(body.question, hits, fmt=body.format):
+            for event in answer_stream(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format):
                 if event["type"] == "text":
                     answer_text.append(event["text"])
                 yield f"data: {json.dumps(event)}\n\n"

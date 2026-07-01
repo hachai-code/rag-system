@@ -19,6 +19,8 @@ from ..config import CONFIG
 # from config.toml. Prod runs the openai-compat/DeepSeek path (see README).
 GEN_PROVIDER = CONFIG.gen_provider
 GEN_MODEL = CONFIG.gen_model
+# Picker options for the API `model` field: short name -> OpenRouter model id.
+GEN_MODELS = CONFIG.gen_models
 # "prose" (one synthesized answer, chunks shown as proof) or "claims" (structured,
 # per-sentence citations). Only affects the openai-compat path; anthropic is always prose.
 ANSWER_FORMAT = CONFIG.answer_format
