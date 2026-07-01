@@ -17,10 +17,10 @@ from app import AskRequest, _no_relevant_hits
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
-    Fact,
+    Claim,
     GroundedAnswer,
+    _chunk_citations,
     _citations,
-    _grounded_citations,
 )
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
@@ -61,34 +61,27 @@ def test_blocks_without_citations_produce_no_records():
     assert _citations([_block("Unsupported claim.", [])], HITS) == []
 
 
-# The OpenAI-compatible path rebuilds citations from structured facts instead of the
-# Anthropic Citations API. _grounded_citations must hold the same invariant: every
-# returned cited_text is a substring of the chunk it points at, and chunk_index maps
-# back to the right hit. The `context` is what the model_validator reads to filter
-# quotes, exactly as the live create() call passes it.
-def _grounded(facts: list[dict]) -> GroundedAnswer:
-    return GroundedAnswer.model_validate(
-        {"facts": facts}, context={"chunks": [h["content"] for h in HITS]}
-    )
+# The OpenAI-compatible path cites whole retrieved chunks rather than model-written
+# quotes: the model returns claims tagged with chunk indices, and _chunk_citations maps
+# each index back to its hit. cited_text is the chunk itself (grounded by construction),
+# and an out-of-range index — a chunk the model named that wasn't retrieved — is dropped.
+def _grounded(claims: list[dict]) -> GroundedAnswer:
+    return GroundedAnswer.model_validate({"claims": claims})
 
 
-def test_grounded_citation_is_grounded_and_maps_to_its_hit():
-    grounded = _grounded(
-        [{"statement": "It reroutes.", "chunk_index": 0,
-          "substring_quote": ["dopamine reroutes to the old brain"]}]
-    )
-    text, [cite] = _grounded_citations(grounded, HITS)
+def test_chunk_citation_maps_to_its_hit():
+    grounded = _grounded([{"statement": "It reroutes.", "chunk_indices": [0]}])
+    text, [cite] = _chunk_citations(grounded, HITS)
     assert text == "It reroutes."
-    assert cite["cited_text"] in HITS[0]["content"]
+    assert cite["cited_text"] == HITS[0]["content"]
     assert (cite["chunk_id"], cite["title"], cite["source"]) == (11, "Day 1", "day1.rtf")
 
 
-def test_ungrounded_quote_is_dropped():
-    grounded = _grounded(
-        [{"statement": "Fabricated.", "chunk_index": 0,
-          "substring_quote": ["a quote the chunk never contained"]}]
-    )
-    _, citations = _grounded_citations(grounded, HITS)
+def test_out_of_range_chunk_index_is_dropped():
+    grounded = _grounded([{"statement": "Cites a chunk that wasn't retrieved.",
+                           "chunk_indices": [99]}])
+    text, citations = _chunk_citations(grounded, HITS)
+    assert text == "Cites a chunk that wasn't retrieved."
     assert citations == []
 
 

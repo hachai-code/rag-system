@@ -9,12 +9,13 @@ from functools import lru_cache
 
 import anthropic
 import instructor
+from instructor.core import IncompleteOutputException
 import psycopg
 import voyageai
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
-from pydantic import BaseModel, ValidationInfo, model_validator
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -70,12 +71,12 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # ceiling, not open-ended — and RELEVANCE_THRESHOLD skips this call entirely when
 # nothing relevant was retrieved.
 MAX_TOKENS = 1024
-# The OpenAI-compatible path serializes the answer AND every verbatim citation quote as
-# JSON in one response, which runs several times longer than the prose MAX_TOKENS the
-# Citations API needs (that returns quotes as metadata, not inline) — a rich answer can
-# reach ~5k tokens. A JSON response cut off mid-structure is unparseable, and DeepSeek's
-# length varies run to run, so this is set well above the typical size to leave margin.
-STRUCTURED_MAX_TOKENS = 16384
+# The OpenAI-compatible path returns the same answer wrapped as JSON claims (statements
+# plus their supporting chunk indices), which runs longer than the raw prose MAX_TOKENS
+# the Anthropic path streams — a full answer serialized this way reaches ~2.5k tokens.
+# Both models terminate cleanly at chunk granularity, so this is a real ceiling, not a
+# guard against runaway generation.
+STRUCTURED_MAX_TOKENS = 4096
 # No citation instructions here: the Citations feature handles attribution itself,
 # returning the exact source quote for each claim, so we only ask for grounding.
 SYSTEM_PROMPT = (
@@ -245,56 +246,48 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
 
 
 # --- OpenAI-compatible citation rebuild ---------------------------------------
-# Off-Anthropic there is no Citations API, so the model is asked for structured
-# claims and we re-impose the same "cited quote is a verbatim substring of its
-# chunk" invariant ourselves (the rule test_assertions.py checks). This mirrors
-# instructor's exact-citations example: a model_validator(mode="after") drops any
-# quote it can't find in the source chunk, passed in via context=.
-# (https://python.useinstructor.com/examples/exact_citations/)
+# Off-Anthropic there is no Citations API. Rather than have the model re-transcribe
+# verbatim quotes (token-heavy, and weaker models run on unboundedly producing the
+# JSON), we ask only which retrieved chunks support each claim — a list of indices,
+# not text. The citation's `cited_text` is then the chunk itself, so it is grounded
+# by construction and the model can't fabricate a quote. The trade-off vs the
+# Anthropic path is granularity: a whole chunk, not the exact supporting sentence.
 
 
-class Fact(BaseModel):
-    """One claim plus the verbatim spans of a single chunk that support it.
+class Claim(BaseModel):
+    """One sentence of the answer plus the indices of the chunks that support it.
 
-    `chunk_index` selects which retrieved chunk this fact cites; the validator
-    keeps only quotes that actually appear in that chunk's text, dropping anything
-    the model paraphrased or invented."""
+    Indices are the [i] labels the chunks carry in the prompt (see
+    _openai_user_content); they map straight back to hits[i]."""
 
     statement: str
-    chunk_index: int
-    substring_quote: list[str]
-
-    @model_validator(mode="after")
-    def keep_grounded_quotes(self, info: ValidationInfo) -> "Fact":
-        chunks = (info.context or {}).get("chunks", [])
-        chunk = chunks[self.chunk_index] if 0 <= self.chunk_index < len(chunks) else ""
-        self.substring_quote = [q for q in self.substring_quote if q in chunk]
-        return self
+    chunk_indices: list[int]
 
 
 class GroundedAnswer(BaseModel):
-    facts: list[Fact]
+    claims: list[Claim]
 
 
-def _grounded_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, list[dict]]:
-    """Assemble (answer_text, citations) from validated facts.
+def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, list[dict]]:
+    """Assemble (answer_text, citations) from claims tagged with chunk indices.
 
-    The prose is the facts' statements joined in order; each surviving quote becomes
-    one citation record tied back to its chunk — the same dict shape `_citations()`
-    returns, so callers downstream don't care which adapter produced it. Quotes were
-    already filtered to verbatim chunk substrings by Fact's validator, so the
-    cited_text-in-chunk invariant holds by construction."""
-    text = " ".join(fact.statement for fact in grounded.facts)
+    The prose is the claims' statements joined in order; each supporting chunk becomes
+    one citation record whose `cited_text` is the chunk's own content — the same dict
+    shape `_citations()` returns, so downstream callers don't care which adapter
+    produced it, and the cited_text-in-chunk invariant holds trivially. Out-of-range
+    indices (the model naming a chunk that wasn't retrieved) are dropped."""
+    text = " ".join(claim.statement for claim in grounded.claims)
     citations = [
         {
-            "claim": fact.statement,
-            "cited_text": quote,
-            "chunk_id": hits[fact.chunk_index]["id"],
-            "title": hits[fact.chunk_index]["title"],
-            "source": hits[fact.chunk_index]["source"],
+            "claim": claim.statement,
+            "cited_text": hits[idx]["content"],
+            "chunk_id": hits[idx]["id"],
+            "title": hits[idx]["title"],
+            "source": hits[idx]["source"],
         }
-        for fact in grounded.facts
-        for quote in fact.substring_quote
+        for claim in grounded.claims
+        for idx in claim.chunk_indices
+        if 0 <= idx < len(hits)
     ]
     return text, citations
 
@@ -332,17 +325,26 @@ def answer(question: str, hits: list[dict],
         api_key=os.environ["OPENROUTER_API_KEY"],
         mode=instructor.Mode.JSON,
     )
-    grounded = client.create(
-        response_model=GroundedAnswer,
-        context={"chunks": [hit["content"] for hit in hits]},
-        max_tokens=STRUCTURED_MAX_TOKENS,
-        max_retries=2,  # re-ask if DeepSeek returns unparseable/truncated JSON
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": _openai_user_content(question, hits)},
-        ],
-    )
-    return _grounded_citations(grounded, hits)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": _openai_user_content(question, hits)},
+    ]
+    # OpenRouter load-balances across backends; under batch load some occasionally
+    # truncate the response (finish_reason=length) even though the same request succeeds
+    # on a retry. instructor's max_retries only covers parse/validation errors, not a
+    # length cutoff, so retry that case ourselves.
+    for attempt in range(3):
+        try:
+            grounded = client.create(
+                response_model=GroundedAnswer,
+                max_tokens=STRUCTURED_MAX_TOKENS,
+                messages=messages,
+            )
+            break
+        except IncompleteOutputException:
+            if attempt == 2:
+                raise
+    return _chunk_citations(grounded, hits)
 
 
 def answer_stream(question: str, hits: list[dict],
