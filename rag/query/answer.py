@@ -37,7 +37,10 @@ SYSTEM_PROMPT = (
     "Stay true to the source's own wording and meaning: prefer the documents' terms "
     "and phrasing, and do not add interpretations, inferences, or claims that the "
     "documents do not state. "
-    "Answer directly; do not open with a preamble about your sources"
+    "Begin with the substance of the answer itself. Never open with a meta-comment "
+    "about your sources or method — do not start with phrases like \"Based solely on "
+    "the provided documents\", \"According to the documents\", or \"Based on the "
+    "context\"; go straight to the answer."
 )
 
 
