@@ -11,7 +11,7 @@ chunk_overlap = 50    # tokens carried from the end of one chunk into the next
 voyage_model = "voyage-4"
 
 [retrieval]
-top_k = 60                  # chunks handed to the generator — the main "how much context" lever
+top_k = 40                  # chunks handed to the generator — the main "how much context" lever
 relevance_threshold = 0.7   # cosine distance above which the corpus is treated as "no answer"
 fuse_depth = 120            # candidates pulled per retriever before RRF
 rrf_k = 60                  # Reciprocal Rank Fusion constant (paper value)
@@ -20,6 +20,7 @@ keyword_weight = 0.5        # keyword is the noisier retriever, so it's down-wei
 rerank_model = "rerank-2.5"
 rerank_depth = 120          # fused candidates fed to the cross-encoder reranker
 source_window = 3           # context chunks shown each side of a cited chunk on click-through
+context_window = 3          # neighbouring chunks fed to the generator around each retrieved chunk (0 disables)
 
 [generation]
 gen_provider = "openai-compat"            # prod runs DeepSeek via OpenRouter

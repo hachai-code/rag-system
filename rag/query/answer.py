@@ -46,7 +46,7 @@ def context_documents(hits: list[dict]) -> list[dict]:
     return [
         {
             "type": "document",
-            "source": {"type": "text", "media_type": "text/plain", "data": hit["content"]},
+            "source": {"type": "text", "media_type": "text/plain", "data": hit.get("context") or hit["content"]},
             "title": hit["title"],
             "citations": {"enabled": True},
         }
@@ -69,7 +69,7 @@ def _openai_user_content(question: str, hits: list[dict]) -> str:
     """The OpenAI-compatible user turn: chunks numbered [i] so the model can cite them
     by index (mapping back to hits[i]), then the question."""
     numbered = "\n\n".join(
-        f"[{i}] {hit['content']}" for i, hit in enumerate(hits)
+        f"[{i}] {hit.get('context') or hit['content']}" for i, hit in enumerate(hits)
     )
     return f"{numbered}\n\nQuestion: {question}"
 

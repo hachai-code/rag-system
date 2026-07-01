@@ -23,6 +23,7 @@ class Config:
     rerank_model: str
     rerank_depth: int
     source_window: int
+    context_window: int
     gen_provider: str
     gen_model: str
     answer_format: str

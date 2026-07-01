@@ -31,6 +31,7 @@ RERANK_DEPTH = CONFIG.rerank_depth
 
 # Chunks of surrounding context to show on each side of a cited chunk (click-through).
 SOURCE_WINDOW = CONFIG.source_window
+CONTEXT_WINDOW = CONFIG.context_window
 
 _voyage = voyageai.Client(max_retries=2)
 
@@ -50,7 +51,7 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
     embedding = embed_query(question)
     return conn.execute(
         """
-        SELECT c.id, d.title, d.source, c.content,
+        SELECT c.id, d.title, d.source, c.document_id, c.chunk_index, c.content,
                c.embedding <=> %(emb)s::vector AS distance
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
@@ -74,7 +75,7 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
                 websearch_to_tsquery('english', %(question)s)::text, '&', '|'
             )::tsquery AS tsq
         )
-        SELECT c.id, d.title, d.source, c.content,
+        SELECT c.id, d.title, d.source, c.document_id, c.chunk_index, c.content,
                ts_rank(c.content_tsv, q.tsq) AS rank
         FROM chunks c
         JOIN documents d ON d.id = c.document_id, q
@@ -114,7 +115,10 @@ def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
     reranked = _voyage.rerank(
         question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
     )
-    return [candidates[r.index] for r in reranked.results]
+    hits = [candidates[r.index] for r in reranked.results]
+    if CONTEXT_WINDOW:
+        _add_context(conn, hits, CONTEXT_WINDOW)
+    return hits
 
 
 def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:
@@ -144,6 +148,22 @@ def _stitch(rows: list[dict], target_index: int) -> tuple[str, str, str]:
         else:
             after.extend(lines[_overlap(chunk + after, lines):])
     return "\n".join(before), "\n".join(chunk), "\n".join(after)
+
+
+def _add_context(conn: psycopg.Connection, hits: list[dict], window: int) -> None:
+    """Widen each hit for the generator. `content` stays the exact retrieved chunk (so
+    citations and highlighting stay precise); `context` holds it stitched back together
+    with `window` chunks of surrounding text from the same document."""
+    for hit in hits:
+        rows = conn.execute(
+            """SELECT chunk_index, content
+               FROM chunks
+               WHERE document_id = %s AND chunk_index BETWEEN %s AND %s
+               ORDER BY chunk_index""",
+            (hit["document_id"], hit["chunk_index"] - window, hit["chunk_index"] + window),
+        ).fetchall()
+        before, chunk, after = _stitch(rows, hit["chunk_index"])
+        hit["context"] = "\n".join(part for part in (before, chunk, after) if part)
 
 
 def source_passage(conn: psycopg.Connection, chunk_id: int, window: int = SOURCE_WINDOW) -> dict:
