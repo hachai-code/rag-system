@@ -23,6 +23,7 @@ dependencies = [
     "instructor>=1.15.3",
     "openai>=2.43.0",
     "pymupdf>=1.27.2.3",
+    "deepeval>=4.0.7",
 ]
 
 [dependency-groups]
