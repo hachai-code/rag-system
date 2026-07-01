@@ -10,6 +10,7 @@ import os
 import anthropic
 import instructor
 from instructor.core import IncompleteOutputException
+from openai import OpenAI
 from pydantic import BaseModel
 
 from ..config import CONFIG
@@ -18,6 +19,9 @@ from ..config import CONFIG
 # from config.toml. Prod runs the openai-compat/DeepSeek path (see README).
 GEN_PROVIDER = CONFIG.gen_provider
 GEN_MODEL = CONFIG.gen_model
+# "prose" (one synthesized answer, chunks shown as proof) or "claims" (structured,
+# per-sentence citations). Only affects the openai-compat path; anthropic is always prose.
+ANSWER_FORMAT = CONFIG.answer_format
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MAX_TOKENS = CONFIG.max_tokens
@@ -27,7 +31,9 @@ STRUCTURED_MAX_TOKENS = CONFIG.structured_max_tokens
 
 SYSTEM_PROMPT = (
     "You answer questions about the innerdance corpus using only the provided "
-    "documents. If the documents do not contain the answer, say you don't know. The answers are thorough and detailed. You are allowed to synthesize information"
+    "documents. If the documents do not contain the answer, say you don't know. "
+    "Write a thorough, detailed answer in flowing prose that synthesizes and "
+    "connects information across the documents rather than listing separate facts."
 )
 
 
@@ -83,6 +89,38 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
     ]
 
 
+def _proof(hits: list[dict]) -> list[dict]:
+    """The retrieved chunks shown as-is as proof for a prose answer — no claim/span
+    mapping. Same dict shape as _citations()/_chunk_citations() so callers (app.py's
+    Citation model) don't care which path produced them."""
+    return [
+        {"claim": "", "cited_text": hit["content"], "chunk_id": hit["id"],
+         "title": hit["title"], "source": hit["source"]}
+        for hit in hits
+    ]
+
+
+def answer_prose(question: str, hits: list[dict],
+                 model: str = GEN_MODEL, system: str = SYSTEM_PROMPT) -> tuple[str, list[dict]]:
+    """One synthesized prose answer over the chunks (openai-compat path).
+
+    No structured schema — a raw completion is what makes the model write flowing
+    prose instead of the per-sentence claims of the GroundedAnswer path. The proof is
+    the retrieved chunks; grounding is by the prompt, not by construction."""
+    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    # ponytail: STRUCTURED_MAX_TOKENS ceiling; if OpenRouter truncates a long answer
+    # the text just comes back short (finish_reason="length"), raise the cap if it bites.
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=STRUCTURED_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": _openai_user_content(question, hits)},
+        ],
+    )
+    return resp.choices[0].message.content, _proof(hits)
+
+
 class Claim(BaseModel):
     """One sentence of the answer plus the [i] indices of the chunks supporting it."""
 
@@ -118,12 +156,14 @@ def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, l
 
 def answer(question: str, hits: list[dict],
            model: str = GEN_MODEL, system: str = SYSTEM_PROMPT,
-           provider: str = GEN_PROVIDER) -> tuple[str, list[dict]]:
+           provider: str = GEN_PROVIDER, fmt: str = ANSWER_FORMAT) -> tuple[str, list[dict]]:
     """Answer over the retrieved chunks and return (answer_text, citations).
 
-    Dispatches by `provider` (see README). The eval runner overrides the defaults to
-    test a config (evals/run.py)."""
+    Dispatches by `provider` (see README); `fmt` picks prose vs structured claims on
+    the openai-compat path. The eval runner overrides the defaults to test a config
+    (evals/run.py)."""
     if provider == "anthropic":
+        # Already prose with native span citations, so `fmt` is a no-op here.
         client = anthropic.Anthropic()
         response = client.messages.create(
             model=model,
@@ -133,6 +173,9 @@ def answer(question: str, hits: list[dict],
         )
         text = "".join(block.text for block in response.content)
         return text, _citations(response.content, hits)
+
+    if fmt == "prose":
+        return answer_prose(question, hits, model=model, system=system)
 
     # OPENROUTER_API_KEY passed as the OpenAI key against OpenRouter's base URL.
     # Mode.JSON, not TOOLS: some OpenRouter models don't reliably emit tool calls for

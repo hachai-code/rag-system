@@ -29,7 +29,7 @@ from psycopg.rows import dict_row
 from evals.answer_system.judge import eval_items
 from evals.answer_system.judge_db import judge_client
 from evals.run import evaluate, load_config
-from rag import DB_URL
+from rag import ANSWER_FORMAT, DB_URL
 
 BASELINE = Path(__file__).parent / "baseline_metrics.json"
 THRESHOLD = 0.15
@@ -55,7 +55,8 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
         register_vector(conn)
         for r in evaluate(conn, client,
                           items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
-                          cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt):
+                          cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt,
+                          cfg["generation"].get("format", ANSWER_FORMAT)):
             succeeded += 1
             for dim, passed in r["scores"].items():
                 per_dim[dim].append(passed)

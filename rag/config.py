@@ -25,6 +25,7 @@ class Config:
     source_window: int
     gen_provider: str
     gen_model: str
+    answer_format: str
     max_tokens: int
     structured_max_tokens: int
     ocr_model: str

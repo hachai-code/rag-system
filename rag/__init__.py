@@ -10,6 +10,7 @@ load_dotenv()
 
 from rag.db import DB_URL
 from rag.query.answer import (
+    ANSWER_FORMAT,
     GEN_MODEL,
     GEN_PROVIDER,
     OPENROUTER_BASE_URL,
@@ -41,6 +42,7 @@ __all__ = [
     "hybrid_search",
     "rerank_search",
     "source_passage",
+    "ANSWER_FORMAT",
     "GEN_MODEL",
     "GEN_PROVIDER",
     "OPENROUTER_BASE_URL",
