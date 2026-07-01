@@ -28,7 +28,7 @@ STRUCTURED_MAX_TOKENS = 4096
 
 SYSTEM_PROMPT = (
     "You answer questions about the innerdance corpus using only the provided "
-    "documents. If the documents do not contain the answer, say you don't know."
+    "documents. If the documents do not contain the answer, say you don't know. The answers are thorough and detailed. You are allowed to synthesize information"
 )
 
 
