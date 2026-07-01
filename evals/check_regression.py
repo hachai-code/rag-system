@@ -22,12 +22,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-import instructor
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
 from evals.answer_system.judge import eval_items
+from evals.answer_system.judge_db import judge_client
 from evals.run import evaluate, load_config
 from rag import DB_URL
 
@@ -48,14 +48,14 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
     if limit:
         items = items[:limit]
 
-    client = instructor.from_provider(f"anthropic/{cfg['judge']['model']}", mode=instructor.Mode.TOOLS)
+    client = judge_client(cfg["judge"]["provider"], cfg["judge"]["model"])
     per_dim = defaultdict(list)
     succeeded = 0
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
         register_vector(conn)
         for r in evaluate(conn, client,
                           items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
-                          cfg["generation"]["model"], gen_prompt):
+                          cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt):
             succeeded += 1
             for dim, passed in r["scores"].items():
                 per_dim[dim].append(passed)

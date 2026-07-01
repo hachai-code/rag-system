@@ -24,6 +24,7 @@ from slowapi.util import get_remote_address
 
 from rag import (
     DB_URL,
+    GEN_PROVIDER,
     RELEVANCE_THRESHOLD,
     answer,
     answer_stream,
@@ -60,13 +61,19 @@ app.add_middleware(
 )
 
 # Tracing: with the LANGFUSE_* keys set, each /ask is one Langfuse trace — the
-# retrieved chunks as metadata, plus the Claude call, which the Anthropic
-# instrumentor captures automatically (model, prompt, output, token usage). Without
-# keys, get_client() returns a disabled client and the spans below become no-ops, so
-# the app (and the tests that import it) run unchanged. The server is long-lived, so
-# we don't flush per request — the SDK batches in the background and flushes at exit.
+# retrieved chunks as metadata, plus the generation call, auto-captured (model,
+# prompt, output, token usage) by the adapter's instrumentor. The Anthropic adapter
+# uses AnthropicInstrumentor; the OpenAI-compatible adapter uses the langfuse.openai
+# drop-in, which patches the openai module so the client instructor builds underneath
+# is traced and nests under the rag-ask span. Without keys, get_client() returns a
+# disabled client and the spans below become no-ops, so the app (and the tests that
+# import it) run unchanged. The server is long-lived, so we don't flush per request —
+# the SDK batches in the background and flushes at exit.
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
-    AnthropicInstrumentor().instrument()
+    if GEN_PROVIDER == "anthropic":
+        AnthropicInstrumentor().instrument()
+    else:
+        import langfuse.openai  # noqa: F401  (import patches the openai module)
 langfuse = get_client()
 
 

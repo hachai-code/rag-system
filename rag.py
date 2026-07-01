@@ -8,11 +8,14 @@ import os
 from functools import lru_cache
 
 import anthropic
+import instructor
+from instructor.core import IncompleteOutputException
 import psycopg
 import voyageai
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -55,12 +58,25 @@ RERANK_DEPTH = 20
 SOURCE_WINDOW = 3
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
+# Provider seam: which adapter answer() dispatches to and which model it runs. Both
+# default to the Anthropic baseline, so production is unchanged until config flips
+# them (Phase 2/3). "anthropic" uses the native Citations API; "openai-compat" reaches
+# OpenRouter through instructor and rebuilds citations from structured output.
+GEN_PROVIDER = "anthropic"
+GEN_MODEL = CLAUDE_MODEL
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Per-query cost is bounded on every axis: the question length is capped at the API
 # boundary (see app.py), retrieval sends a fixed TOP_K chunks as context, and
 # MAX_TOKENS caps the generated output. So the worst-case spend per /ask is a known
 # ceiling, not open-ended — and RELEVANCE_THRESHOLD skips this call entirely when
 # nothing relevant was retrieved.
 MAX_TOKENS = 1024
+# The OpenAI-compatible path returns the same answer wrapped as JSON claims (statements
+# plus their supporting chunk indices), which runs longer than the raw prose MAX_TOKENS
+# the Anthropic path streams — a full answer serialized this way reaches ~2.5k tokens.
+# Both models terminate cleanly at chunk granularity, so this is a real ceiling, not a
+# guard against runaway generation.
+STRUCTURED_MAX_TOKENS = 4096
 # No citation instructions here: the Citations feature handles attribution itself,
 # returning the exact source quote for each claim, so we only ask for grounding.
 SYSTEM_PROMPT = (
@@ -198,6 +214,17 @@ def _messages(question: str, hits: list[dict]) -> list[dict]:
     ]
 
 
+def _openai_user_content(question: str, hits: list[dict]) -> str:
+    """The OpenAI-compatible user turn: chunks numbered so the model can cite them by
+    index, then the question. The numbering matches `hits` order, so a returned
+    `chunk_index` maps straight back to hits[index] — the OpenAI-compat analogue of
+    Anthropic's `document_index`."""
+    numbered = "\n\n".join(
+        f"[{i}] {hit['content']}" for i, hit in enumerate(hits)
+    )
+    return f"{numbered}\n\nQuestion: {question}"
+
+
 def _citations(content: list, hits: list[dict]) -> list[dict]:
     """Collect one record per citation, tying each cited claim back to its chunk.
 
@@ -218,40 +245,135 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
     ]
 
 
+# --- OpenAI-compatible citation rebuild ---------------------------------------
+# Off-Anthropic there is no Citations API. Rather than have the model re-transcribe
+# verbatim quotes (token-heavy, and weaker models run on unboundedly producing the
+# JSON), we ask only which retrieved chunks support each claim — a list of indices,
+# not text. The citation's `cited_text` is then the chunk itself, so it is grounded
+# by construction and the model can't fabricate a quote. The trade-off vs the
+# Anthropic path is granularity: a whole chunk, not the exact supporting sentence.
+
+
+class Claim(BaseModel):
+    """One sentence of the answer plus the indices of the chunks that support it.
+
+    Indices are the [i] labels the chunks carry in the prompt (see
+    _openai_user_content); they map straight back to hits[i]."""
+
+    statement: str
+    chunk_indices: list[int]
+
+
+class GroundedAnswer(BaseModel):
+    claims: list[Claim]
+
+
+def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, list[dict]]:
+    """Assemble (answer_text, citations) from claims tagged with chunk indices.
+
+    The prose is the claims' statements joined in order; each supporting chunk becomes
+    one citation record whose `cited_text` is the chunk's own content — the same dict
+    shape `_citations()` returns, so downstream callers don't care which adapter
+    produced it, and the cited_text-in-chunk invariant holds trivially. Out-of-range
+    indices (the model naming a chunk that wasn't retrieved) are dropped."""
+    text = " ".join(claim.statement for claim in grounded.claims)
+    citations = [
+        {
+            "claim": claim.statement,
+            "cited_text": hits[idx]["content"],
+            "chunk_id": hits[idx]["id"],
+            "title": hits[idx]["title"],
+            "source": hits[idx]["source"],
+        }
+        for claim in grounded.claims
+        for idx in claim.chunk_indices
+        if 0 <= idx < len(hits)
+    ]
+    return text, citations
+
+
 def answer(question: str, hits: list[dict],
-           model: str = CLAUDE_MODEL, system: str = SYSTEM_PROMPT) -> tuple[str, list[dict]]:
-    """Ask Claude over the retrieved chunks and return (answer_text, citations).
+           model: str = GEN_MODEL, system: str = SYSTEM_PROMPT,
+           provider: str = GEN_PROVIDER) -> tuple[str, list[dict]]:
+    """Answer over the retrieved chunks and return (answer_text, citations).
 
-    `model` and `system` default to the production constants; the eval runner overrides
-    them to test a config/prompt version (evals/run.py)."""
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=model,
-        max_tokens=MAX_TOKENS,
-        system=system,
-        messages=_messages(question, hits),
+    Dispatches by `provider`: "anthropic" uses the native Citations API (the baseline
+    path, unchanged); "openai-compat" reaches an OpenAI-compatible endpoint through
+    instructor and rebuilds citations from structured output. `model`, `system`, and
+    `provider` default to the production constants; the eval runner overrides them to
+    test a config (evals/run.py)."""
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=_messages(question, hits),
+        )
+        text = "".join(block.text for block in response.content)
+        return text, _citations(response.content, hits)
+
+    # api_key is OPENROUTER_API_KEY passed as the OpenAI key against OpenRouter's base
+    # URL — instructor's generic openai provider would otherwise read OPENAI_API_KEY,
+    # which isn't the key this path uses. Mode.JSON, not the default TOOLS: DeepSeek on
+    # OpenRouter doesn't reliably emit tool calls for the schema (it returns the fields as
+    # prose), so we ask for JSON in the content instead — the mode instructor recommends
+    # for OpenAI-compatible models with flaky function-calling.
+    client = instructor.from_provider(
+        f"openai/{model}",
+        base_url=OPENROUTER_BASE_URL,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        mode=instructor.Mode.JSON,
     )
-    text = "".join(block.text for block in response.content)
-    return text, _citations(response.content, hits)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": _openai_user_content(question, hits)},
+    ]
+    # OpenRouter load-balances across backends; under batch load some occasionally
+    # truncate the response (finish_reason=length) even though the same request succeeds
+    # on a retry. instructor's max_retries only covers parse/validation errors, not a
+    # length cutoff, so retry that case ourselves.
+    for attempt in range(3):
+        try:
+            grounded = client.create(
+                response_model=GroundedAnswer,
+                max_tokens=STRUCTURED_MAX_TOKENS,
+                messages=messages,
+            )
+            break
+        except IncompleteOutputException:
+            if attempt == 2:
+                raise
+    return _chunk_citations(grounded, hits)
 
 
-def answer_stream(question: str, hits: list[dict]):
+def answer_stream(question: str, hits: list[dict],
+                  model: str = GEN_MODEL, provider: str = GEN_PROVIDER):
     """Yield the answer incrementally, then one citation record per source.
 
-    Text streams token by token for a live UI. Citations are only final once their
-    text block closes, so we read them from the completed message after the text is
-    done — each yielded as {"type": "text"|"citation", ...}."""
-    client = anthropic.Anthropic()
-    with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=_messages(question, hits),
-    ) as stream:
-        for text in stream.text_stream:
-            yield {"type": "text", "text": text}
-        final = stream.get_final_message()
-    for cite in _citations(final.content, hits):
+    Both adapters keep the same text-first / citations-last contract. The Anthropic
+    path streams token by token; the OpenAI-compatible path can't token-stream a
+    structured response, so it returns the prose in one text event then the citations
+    (citations-at-end — live streaming isn't required). Each item is yielded as
+    {"type": "text"|"citation", ...}."""
+    if provider == "anthropic":
+        client = anthropic.Anthropic()
+        with client.messages.stream(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            messages=_messages(question, hits),
+        ) as stream:
+            for text in stream.text_stream:
+                yield {"type": "text", "text": text}
+            final = stream.get_final_message()
+        for cite in _citations(final.content, hits):
+            yield {"type": "citation", **cite}
+        return
+
+    text, citations = answer(question, hits, model=model, provider=provider)
+    yield {"type": "text", "text": text}
+    for cite in citations:
         yield {"type": "citation", **cite}
 
 
