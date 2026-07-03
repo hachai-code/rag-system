@@ -234,18 +234,19 @@ def answer(question: str, hits: list[dict],
 
 def answer_stream(question: str, hits: list[dict],
                   model: str = GEN_MODEL, provider: str = GEN_PROVIDER,
-                  fmt: str = ANSWER_FORMAT):
+                  fmt: str = ANSWER_FORMAT, system: str = SYSTEM_PROMPT):
     """Yield the answer incrementally, then one citation record per source.
 
-    Both adapters keep the text-first / citations-last contract. The OpenAI-compatible
-    path can't token-stream a structured response, so it returns the prose in one text
-    event then the citations. Each item is {"type": "text"|"citation", ...}."""
+    Both adapters keep the text-first / citations-last contract. Prose token-streams
+    (Anthropic natively, the openai-compat path via a raw streamed completion); the
+    structured claims format must be parsed whole, so it comes back as one text event.
+    Each item is {"type": "text"|"citation", ...}."""
     if provider == "anthropic":
         client = anthropic.Anthropic()
         with client.messages.stream(
             model=model,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=system,
             messages=_messages(question, hits),
         ) as stream:
             for text in stream.text_stream:
@@ -255,9 +256,29 @@ def answer_stream(question: str, hits: list[dict],
             yield {"type": "citation", **cite}
         return
 
-    text, citations = answer(question, hits, model=model, provider=provider, fmt=fmt)
-    yield {"type": "text", "text": text}
-    for cite in citations:
+    if fmt == "claims":
+        text, citations = answer(question, hits, model=model, provider=provider, fmt=fmt, system=system)
+        yield {"type": "text", "text": text}
+        for cite in citations:
+            yield {"type": "citation", **cite}
+        return
+
+    # Prose: token-stream the raw completion, then the retrieved chunks as proof.
+    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    stream = client.chat.completions.create(
+        model=model,
+        max_tokens=STRUCTURED_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": _openai_user_content(question, hits, numbered=False)},
+        ],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield {"type": "text", "text": delta}
+    for cite in _proof(hits):
         yield {"type": "citation", **cite}
 
 

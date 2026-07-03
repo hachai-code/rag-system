@@ -164,3 +164,32 @@ def test_rerank_empty_candidates_returns_empty():
     (HyPE not populated), the candidate list is empty and rerank must no-op rather than
     call the cross-encoder on nothing."""
     assert _rerank("any question", [], k=5) == []
+
+
+def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
+    """The openai-compat prose path token-streams (one text event per delta, not one
+    blob) and threads a `system` override through to the completion — so a prompt-variant
+    config reaches /ask/stream, not just /ask. The completion client is faked, so no
+    network: this only exercises the branching contract."""
+    import rag.query.answer as answer_mod
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["system"] = kwargs["messages"][0]["content"]
+        captured["stream"] = kwargs.get("stream")
+        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
+                for c in ["still", "ness ", "begins"]]
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(answer_mod, "OpenAI", lambda **_: fake_client)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+
+    events = list(answer_mod.answer_stream(
+        "q?", HITS, provider="openai-compat", fmt="prose", system="OVERRIDE"))
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    cites = [e for e in events if e["type"] == "citation"]
+    assert texts == ["still", "ness ", "begins"]  # streamed per-token, not one event
+    assert captured["system"] == "OVERRIDE" and captured["stream"] is True
+    assert len(cites) == len(HITS)  # retrieved chunks emitted as proof
