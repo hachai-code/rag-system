@@ -9,7 +9,7 @@ Cost comes from token usage, which instructor only exposes via create_with_compl
 (plain create() drops the raw response); latency is wall time over a question's judge
 calls. Opus 4.8 list price is $5 / $25 per 1M input/output tokens (platform.claude.com).
 
-Schema lives in db/init.sql (eval_runs, eval_results).
+Schema lives in db/migrations/ (eval_runs, eval_results).
 
 Run: uv run python -m evals.answer_system.judge_db [n]
 """

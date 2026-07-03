@@ -1,7 +1,7 @@
 # Base hyperparameters for the RAG system. Loaded once by rag/config.py.
 # Eval experiment configs (evals/configs/*.json) override some of these per run;
 # this file is the production default. EMBED_DIM and BATCH_SIZE stay in code:
-# EMBED_DIM must match VECTOR(1024) in db/init.sql, BATCH_SIZE is a Voyage throughput detail.
+# EMBED_DIM must match VECTOR(1024) in db/migrations/, BATCH_SIZE is a Voyage throughput detail.
 
 [chunking]
 chunk_size = 256      # won the size sweep (evals/chunking-experiments.md)
@@ -14,6 +14,7 @@ voyage_model = "voyage-4"
 method = "rerank"           # retriever funnel: vector | hybrid | rerank (the full stack)
 query_enhancement = ""      # "" (off) | "hyde" | "multi_query" — runtime query rewriting
 parent_document = false     # widen each hit to its neighbouring chunks before answering
+hype = false                # match the query against index-time hypothetical questions (HyPE)
 top_k = 25                  # chunks handed to the generator — the main "how much context" lever
 relevance_threshold = 0.7   # cosine distance above which the corpus is treated as "no answer"
 fuse_depth = 120            # candidates pulled per retriever before RRF

@@ -55,6 +55,7 @@ def load_config(path: str) -> tuple[dict, str]:
         "method": ret.get("method", "rerank"),
         "query_enhancement": ret.get("query_enhancement"),
         "parent_document": ret.get("parent_document", False),
+        "hype": ret.get("hype", False),
         "gen_provider": gen["provider"],
         "gen_model": gen["model"],
         "gen_format": gen.get("format", ANSWER_FORMAT),
@@ -77,7 +78,7 @@ def load_config(path: str) -> tuple[dict, str]:
 
 
 def evaluate(conn, client, items, top_k, threshold, method, query_enhancement, parent_document,
-             gen_provider, gen_model, gen_prompt, gen_format):
+             hype, gen_provider, gen_model, gen_prompt, gen_format):
     """Run retrieve -> answer -> judge for each item; yield one result dict per item.
     Skips (and logs) an item whose calls fail so one bad item can't abort the run.
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
@@ -88,7 +89,8 @@ def evaluate(conn, client, items, top_k, threshold, method, query_enhancement, p
                 ans = NO_ANSWER
             else:
                 hits = retrieve(conn, item["question"], k=top_k, method=method,
-                                query_enhancement=query_enhancement, parent_document=parent_document)
+                                query_enhancement=query_enhancement, parent_document=parent_document,
+                                hype=hype)
                 ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt, provider=gen_provider, fmt=gen_format)
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0
@@ -170,6 +172,7 @@ def main() -> None:
     method = cfg["retrieval"].get("method", "rerank")
     query_enhancement = cfg["retrieval"].get("query_enhancement")
     parent_document = cfg["retrieval"].get("parent_document", False)
+    hype = cfg["retrieval"].get("hype", False)
     gen_provider = cfg["generation"]["provider"]
     gen_model = cfg["generation"]["model"]
     gen_format = cfg["generation"].get("format", ANSWER_FORMAT)
@@ -186,7 +189,7 @@ def main() -> None:
 
         judged = 0
         for r in evaluate(conn, client, items, top_k, threshold, method, query_enhancement,
-                          parent_document, gen_provider, gen_model, gen_prompt, gen_format):
+                          parent_document, hype, gen_provider, gen_model, gen_prompt, gen_format):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)

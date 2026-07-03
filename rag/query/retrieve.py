@@ -22,6 +22,7 @@ METHOD = CONFIG.method  # production default retriever (vector | hybrid | rerank
 # Runtime query-enhancement toggles (config.toml [retrieval]). "" means off.
 QUERY_ENHANCEMENT = CONFIG.query_enhancement or None
 PARENT_DOCUMENT = CONFIG.parent_document
+HYPE = CONFIG.hype  # match against index-time hypothetical questions (see hype_search)
 # Cheap model for HyDE hypotheticals and multi-query paraphrases (the "flash" picker).
 FLASH_MODEL = CONFIG.gen_models["flash"]
 N_VARIANTS = 4  # multi-query paraphrases fused with the original question
@@ -124,6 +125,19 @@ def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
     return rrf(ranked_lists)[:k]
 
 
+def _rerank(question: str, candidates: list[dict], k: int) -> list[dict]:
+    """Cross-encoder rerank a candidate list against the real question, keep k.
+
+    Reused by any first stage that wants rerank on top — hybrid (rerank_search) or the
+    HyPE question-match path — so all of them score (question, chunk) the same way."""
+    if not candidates:
+        return []
+    reranked = _voyage.rerank(
+        question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
+    )
+    return [candidates[r.index] for r in reranked.results]
+
+
 def rerank_search(
     conn: psycopg.Connection, question: str, k: int = TOP_K, retrieve_query: str | None = None
 ) -> list[dict]:
@@ -136,10 +150,7 @@ def rerank_search(
     nearer the answer chunks in embedding space); the reranker still scores against the
     real `question`, where the cross-encoder is sharpest."""
     candidates = hybrid_search(conn, retrieve_query or question, RERANK_DEPTH)
-    reranked = _voyage.rerank(
-        question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
-    )
-    return [candidates[r.index] for r in reranked.results]
+    return _rerank(question, candidates, k)
 
 
 # Retrieval stages share the (conn, question, k) signature, so a config can pick the
@@ -150,6 +161,42 @@ RETRIEVERS = {"vector": search, "hybrid": hybrid_search, "rerank": rerank_search
 def get_retriever(method: str = METHOD):
     """Map a retrieval.method config string to its retriever function."""
     return RETRIEVERS[method]
+
+
+def _dedupe_to_parent(hits: list[dict]) -> list[dict]:
+    """Collapse question-level matches to their distinct parent chunks, keeping each
+    chunk's best (smallest) distance. Several hypothetical questions can point at the
+    same chunk; we want one hit per chunk, ordered nearest first."""
+    best: dict[int, dict] = {}
+    for hit in hits:
+        current = best.get(hit["id"])
+        if current is None or hit["distance"] < current["distance"]:
+            best[hit["id"]] = hit
+    return sorted(best.values(), key=lambda h: h["distance"])
+
+
+def hype_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+    """HyPE: match the query against index-time hypothetical questions, then map each hit
+    back to its parent chunk.
+
+    The stored question vectors sit closer to real queries than the raw chunks do, so this
+    closes the query/document phrasing gap. We over-pull FUSE_DEPTH question matches, then
+    dedupe to distinct parent chunks — the served `content` is the raw chunk, not the
+    hypothetical question."""
+    embedding = embed_query(question)
+    hits = conn.execute(
+        """
+        SELECT c.id, d.title, d.source, c.content,
+               cq.embedding <=> %(emb)s::vector AS distance
+        FROM chunk_questions cq
+        JOIN chunks c ON c.id = cq.chunk_id
+        JOIN documents d ON d.id = c.document_id
+        ORDER BY cq.embedding <=> %(emb)s::vector
+        LIMIT %(depth)s
+        """,
+        {"emb": embedding, "depth": FUSE_DEPTH},
+    ).fetchall()
+    return _dedupe_to_parent(hits)[:k]
 
 
 HYDE_PROMPT = (
@@ -246,11 +293,23 @@ def retrieve(
     method: str = METHOD,
     query_enhancement: str | None = QUERY_ENHANCEMENT,
     parent_document: bool = PARENT_DOCUMENT,
+    hype: bool = HYPE,
 ) -> list[dict]:
     """The retrieval entry point: run `method`, with optional query enhancement and
     parent-document expansion. app.py and the eval runner call this so a config, not a
     code edit, picks the retrieval strategy."""
-    if query_enhancement == "hyde":
+    if hype:
+        # HyPE supplies the first stage — the query matched against hypothetical-question
+        # vectors, mapped back to parent chunks. With rerank, the cross-encoder still
+        # scores the real question for precision (same split as HyDE + rerank); vector/
+        # hybrid just take HyPE's ranking as-is. `hype` is an independent toggle, so an
+        # A/B with hype off falls through to the normal `method` path unchanged.
+        if method == "rerank":
+            candidates = hype_search(conn, question, RERANK_DEPTH)
+            hits = _rerank(question, candidates, k)
+        else:
+            hits = hype_search(conn, question, k)
+    elif query_enhancement == "hyde":
         hypothetical = hyde_query(question)
         if method == "rerank":
             # HyDE lifts stage-1 recall; rerank on the real question for precision.

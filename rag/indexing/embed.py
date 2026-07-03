@@ -14,12 +14,17 @@ from ai_utils import UsageTracker
 from psycopg.types.json import Jsonb
 
 from ..config import CONFIG
+from ..query.answer import complete
 from .chunk import Chunk
 from .ingest import Document
 
 VOYAGE_MODEL = CONFIG.voyage_model
-EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/init.sql
+EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/migrations/
 BATCH_SIZE = 128   # texts per request; limits are 1000 texts / 320K tokens
+
+# HyPE: cheap model that writes the hypothetical questions, and how many per chunk.
+HYPE_GEN_MODEL = CONFIG.gen_models["flash"]
+N_HYPE_QUESTIONS = 4
 
 # Transient failures worth retrying; auth/bad-request errors are excluded.
 _TRANSIENT_ERRORS = (
@@ -109,3 +114,86 @@ def store_chunks(
         """,
         rows,
     )
+
+
+HYPE_PROMPT = (
+    "Write {n} distinct questions that this passage from the innerdance corpus directly "
+    "answers — the kind of questions a reader would ask. One per line, no numbering or "
+    "commentary.\n\nPassage:\n{content}"
+)
+
+
+def hypothetical_questions(content: str, n: int = N_HYPE_QUESTIONS, model: str = HYPE_GEN_MODEL) -> list[str]:
+    """N hypothetical questions the chunk answers (HyPE), via the cheap flash model."""
+    text = complete(HYPE_PROMPT.format(n=n, content=content), model)
+    return [line.strip() for line in text.splitlines() if line.strip()][:n]
+
+
+def populate_hype(
+    conn: psycopg.Connection,
+    client: voyageai.Client,
+    tracker: UsageTracker,
+    chunk_ids: list[int] | None = None,
+    n: int = N_HYPE_QUESTIONS,
+) -> int:
+    """Generate hypothetical questions per chunk, embed them, and (re)store them in
+    chunk_questions. A separate, opt-in step: the chunks table is never touched, so the
+    served `content`/`embedding` stay the raw chunk. Idempotent — a chunk's old questions
+    are cleared before reinsert. Pass `chunk_ids` to run over a subset for testing."""
+    if chunk_ids is None:
+        rows = conn.execute("SELECT id, content FROM chunks ORDER BY id").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, content FROM chunks WHERE id = ANY(%s) ORDER BY id", (list(chunk_ids),)
+        ).fetchall()
+
+    ids: list[int] = []
+    questions: list[str] = []
+    for chunk_id, content in rows:
+        for question in hypothetical_questions(content, n):
+            ids.append(chunk_id)
+            questions.append(question)
+        print(f"  questions {len(ids)} (chunk {chunk_id})", flush=True)
+
+    embeddings = embed_batches(client, questions, tracker)
+
+    conn.execute("DELETE FROM chunk_questions WHERE chunk_id = ANY(%s)", ([r[0] for r in rows],))
+    conn.cursor().executemany(
+        "INSERT INTO chunk_questions (chunk_id, question, embedding) VALUES (%s, %s, %s)",
+        list(zip(ids, questions, embeddings)),
+    )
+    return len(questions)
+
+
+def main() -> None:
+    """Populate chunk_questions for HyPE retrieval. Run after the main index is built:
+
+        uv run python -m rag.indexing.embed            # whole corpus
+        uv run python -m rag.indexing.embed --limit 20 # first 20 chunks (testing)
+    """
+    import argparse
+
+    from pgvector.psycopg import register_vector
+
+    from ..db import DB_URL
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, help="only the first N chunks (quick test)")
+    args = ap.parse_args()
+
+    client = voyageai.Client()
+    tracker = UsageTracker()
+    with psycopg.connect(DB_URL) as conn:
+        register_vector(conn)
+        if args.limit:
+            chunk_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM chunks ORDER BY id LIMIT %s", (args.limit,)
+            ).fetchall()]
+        else:
+            chunk_ids = None
+        n = populate_hype(conn, client, tracker, chunk_ids)
+    print(f"Stored {n} hypothetical questions. Voyage usage: {tracker.summary()}")
+
+
+if __name__ == "__main__":
+    main()

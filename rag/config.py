@@ -17,6 +17,7 @@ class Config:
     method: str
     query_enhancement: str
     parent_document: bool
+    hype: bool
     top_k: int
     relevance_threshold: float
     fuse_depth: int

@@ -58,6 +58,7 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
                           cfg["retrieval"].get("method", "rerank"),
                           cfg["retrieval"].get("query_enhancement"),
                           cfg["retrieval"].get("parent_document", False),
+                          cfg["retrieval"].get("hype", False),
                           cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt,
                           cfg["generation"].get("format", ANSWER_FORMAT)):
             succeeded += 1

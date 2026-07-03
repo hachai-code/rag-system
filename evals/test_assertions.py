@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
-from rag.query.retrieve import _parent_range
+from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
@@ -139,3 +139,28 @@ def test_parent_range_spans_neighbours():
     the same neighbour window source_passage uses for click-through."""
     assert _parent_range(10, window=3) == (7, 13)
     assert _parent_range(0, window=2) == (-2, 2)  # SQL BETWEEN simply matches no chunk < 0
+
+
+def test_hype_dedupes_to_parent_keeping_min_distance():
+    """HyPE matches the query against hypothetical questions, so several matches can point
+    at the same parent chunk; dedupe keeps one hit per chunk at its best distance, nearest
+    first. The served `content` is the raw parent chunk — the question is only what was
+    matched, never what's stored on the chunk or shown to the generator."""
+    matches = [
+        {"id": 11, "title": "Day 1", "source": "day1.rtf",
+         "content": "dopamine reroutes to the old brain", "distance": 0.40},
+        {"id": 22, "title": "Day 2", "source": "day2.rtf",
+         "content": "stillness is where innerdance begins", "distance": 0.30},
+        {"id": 11, "title": "Day 1", "source": "day1.rtf",
+         "content": "dopamine reroutes to the old brain", "distance": 0.20},
+    ]
+    deduped = _dedupe_to_parent(matches)
+    assert [(h["id"], h["distance"]) for h in deduped] == [(11, 0.20), (22, 0.30)]
+    assert deduped[0]["content"] == "dopamine reroutes to the old brain"
+
+
+def test_rerank_empty_candidates_returns_empty():
+    """HyPE + rerank feeds the reranker whatever HyPE found; if chunk_questions is empty
+    (HyPE not populated), the candidate list is empty and rerank must no-op rather than
+    call the cross-encoder on nothing."""
+    assert _rerank("any question", [], k=5) == []

@@ -20,6 +20,7 @@ from slowapi.util import get_remote_address
 from .db import connect
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
 from .query.retrieve import (
+    HYPE,
     METHOD,
     PARENT_DOCUMENT,
     QUERY_ENHANCEMENT,
@@ -77,6 +78,8 @@ class AskRequest(BaseModel):
     query_enhancement: Literal["hyde", "multi_query"] | None = QUERY_ENHANCEMENT
     # Widen each hit to its neighbouring chunks before answering (parent-document retrieval).
     parent_document: bool = PARENT_DOCUMENT
+    # Match the query against index-time hypothetical questions instead of raw chunks (HyPE).
+    hype: bool = HYPE
     # Chunks handed to the generator (the citable pool). Defaults to config top_k;
     # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
     top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K
@@ -141,7 +144,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
             hits = retrieve(conn, body.question, k=body.top_k, method=body.method,
                             query_enhancement=body.query_enhancement,
-                            parent_document=body.parent_document)
+                            parent_document=body.parent_document, hype=body.hype)
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
         span.update(output=text)
@@ -172,7 +175,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     return
                 hits = retrieve(conn, body.question, k=body.top_k, method=body.method,
                                 query_enhancement=body.query_enhancement,
-                                parent_document=body.parent_document)
+                                parent_document=body.parent_document, hype=body.hype)
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
             for event in answer_stream(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format):
