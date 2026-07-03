@@ -9,7 +9,8 @@ services:
       - "5432:5432"
     volumes:
       - rag-pgdata:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Schema is applied by `uv run python db/migrate.py` after startup (not on
+      # first-init), so schema changes reach an existing volume, not just a fresh one.
 
 volumes:
   rag-pgdata:

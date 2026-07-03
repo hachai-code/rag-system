@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
+from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
@@ -21,6 +22,11 @@ from rag import (
     GroundedAnswer,
     _chunk_citations,
     _citations,
+    get_retriever,
+    hybrid_search,
+    rerank_search,
+    rrf,
+    search,
 )
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
@@ -101,9 +107,89 @@ def test_question_length_is_bounded():
         AskRequest(question="x" * 1001)
 
 
+def test_get_retriever_maps_method_to_function():
+    """The retrieval.method config string picks the funnel depth; each maps to its
+    retriever so configs can A/B vector vs hybrid vs rerank without a code edit."""
+    assert get_retriever("vector") is search
+    assert get_retriever("hybrid") is hybrid_search
+    assert get_retriever("rerank") is rerank_search
+
+
 def test_retrieval_metrics():
     """recall@k is a hit/miss flag; reciprocal rank is 1/rank of the first gold hit."""
     assert recall_at_k([3, 1, 2], {1}) == 1.0
     assert recall_at_k([3, 4, 5], {1}) == 0.0
     assert reciprocal_rank([3, 1, 2], {1}) == 0.5
     assert reciprocal_rank([3, 4, 5], {1}) == 0.0
+
+
+def test_rrf_fuses_ranked_lists_into_one_order():
+    """Weighted RRF scores each chunk sum(weight / (k + rank)) over the lists it appears
+    in, so agreement across lists and a heavier weight both lift a chunk. The shared
+    helper drives hybrid_search and multi-query fusion alike."""
+    vector = [{"id": 1}, {"id": 2}, {"id": 3}]  # ranks 1, 2, 3
+    keyword = [{"id": 3}, {"id": 4}]            # ranks 1, 2
+    fused = [h["id"] for h in rrf([(1.0, vector), (0.5, keyword)], k=60)]
+    # 3 wins on cross-list agreement; 1 > 2 by rank; 4 last on the down-weighted list.
+    assert fused == [3, 1, 2, 4]
+
+
+def test_parent_range_spans_neighbours():
+    """expand_to_parent pulls the ±window chunks around a matched child by chunk_index —
+    the same neighbour window source_passage uses for click-through."""
+    assert _parent_range(10, window=3) == (7, 13)
+    assert _parent_range(0, window=2) == (-2, 2)  # SQL BETWEEN simply matches no chunk < 0
+
+
+def test_hype_dedupes_to_parent_keeping_min_distance():
+    """HyPE matches the query against hypothetical questions, so several matches can point
+    at the same parent chunk; dedupe keeps one hit per chunk at its best distance, nearest
+    first. The served `content` is the raw parent chunk — the question is only what was
+    matched, never what's stored on the chunk or shown to the generator."""
+    matches = [
+        {"id": 11, "title": "Day 1", "source": "day1.rtf",
+         "content": "dopamine reroutes to the old brain", "distance": 0.40},
+        {"id": 22, "title": "Day 2", "source": "day2.rtf",
+         "content": "stillness is where innerdance begins", "distance": 0.30},
+        {"id": 11, "title": "Day 1", "source": "day1.rtf",
+         "content": "dopamine reroutes to the old brain", "distance": 0.20},
+    ]
+    deduped = _dedupe_to_parent(matches)
+    assert [(h["id"], h["distance"]) for h in deduped] == [(11, 0.20), (22, 0.30)]
+    assert deduped[0]["content"] == "dopamine reroutes to the old brain"
+
+
+def test_rerank_empty_candidates_returns_empty():
+    """HyPE + rerank feeds the reranker whatever HyPE found; if chunk_questions is empty
+    (HyPE not populated), the candidate list is empty and rerank must no-op rather than
+    call the cross-encoder on nothing."""
+    assert _rerank("any question", [], k=5) == []
+
+
+def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
+    """The openai-compat prose path token-streams (one text event per delta, not one
+    blob) and threads a `system` override through to the completion — so a prompt-variant
+    config reaches /ask/stream, not just /ask. The completion client is faked, so no
+    network: this only exercises the branching contract."""
+    import rag.query.answer as answer_mod
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["system"] = kwargs["messages"][0]["content"]
+        captured["stream"] = kwargs.get("stream")
+        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
+                for c in ["still", "ness ", "begins"]]
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(answer_mod, "OpenAI", lambda **_: fake_client)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+
+    events = list(answer_mod.answer_stream(
+        "q?", HITS, provider="openai-compat", fmt="prose", system="OVERRIDE"))
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    cites = [e for e in events if e["type"] == "citation"]
+    assert texts == ["still", "ness ", "begins"]  # streamed per-token, not one event
+    assert captured["system"] == "OVERRIDE" and captured["stream"] is True
+    assert len(cites) == len(HITS)  # retrieved chunks emitted as proof

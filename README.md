@@ -20,7 +20,7 @@ rag/
   app.py             FastAPI service
   ocr.py             one-off: OCR image-only slide PDFs to Markdown
   pipeline.py        build_index(): runs ingest -> chunk -> embed in sequence
-db/init.sql          schema (documents, chunks, eval tables) + indexes
+db/migrations/       ordered schema migrations; db/migrate.py applies pending ones
 evals/               evaluation harness and research artifacts
 frontend/            Next.js UI
 ```
@@ -28,9 +28,10 @@ frontend/            Next.js UI
 ## Setup & running
 
 ```bash
-docker compose up -d                     # Postgres + pgvector; runs db/init.sql once
+docker compose up -d                     # Postgres + pgvector (empty)
 cp .env.example .env                      # then fill in the API keys
 uv sync
+uv run python db/migrate.py               # apply pending schema migrations
 
 uv run python -m rag.ocr                  # optional: OCR the image-only slide PDFs first
 uv run python -m rag.pipeline             # build the index (ingest -> chunk -> embed -> store)

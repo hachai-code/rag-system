@@ -14,6 +14,10 @@ class Config:
     chunk_size: int
     chunk_overlap: int
     voyage_model: str
+    method: str
+    query_enhancement: str
+    parent_document: bool
+    hype: bool
     top_k: int
     relevance_threshold: float
     fuse_depth: int

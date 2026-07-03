@@ -34,6 +34,10 @@ EVAL_FILE = Path(__file__).parent / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "judgments.jsonl"
 JUDGE_MODEL = "claude-opus-4-8"  # Opus-class: a weak judge is worse than no judge
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
+# Sentinel for a hard model refusal (stop_reason="refusal"): the API returns no text,
+# so there is nothing to judge against the rubric. Items 70-F/74-E hit this — we record
+# the refusal as the answer so the row produces a verdict instead of crashing.
+REFUSED = "[hard refusal: the model declined to answer]"
 
 
 class Verdict(BaseModel):
@@ -54,9 +58,9 @@ RUBRICS = {
     ),
     "B": (
         "Retrieval Quality",
-        "Is the answer grounded in the correct, on-topic context — the right subject (innerdance vs. kundalini), the right speaker's turn, and enough relevant material to answer fully?",
+        "Is the answer grounded in context that is on-topic for the question asked, drawn from the right speaker's turn, and complete enough to answer fully?",
         "Grounded in on-topic context from the correct speaker/turn, with no obviously missing key information.",
-        "Draws on adjacent-but-wrong-topic material (e.g. kundalini for an innerdance question), uses the wrong speaker, or is incomplete because context is missing.",
+        "Draws on adjacent-but-wrong-topic material, uses the wrong speaker, or is incomplete because context is missing.",
     ),
     "C": (
         "Generation Quality",
@@ -92,10 +96,21 @@ Criterion: {criterion}
 PASS: {pass_def}
 FAIL: {fail_def}
 
+Judge only against the criterion above. A coherent, readable answer is not "garbled" or "incoherent" — do not invent a fluency objection that the criterion doesn't name. FAIL only when the criterion's FAIL condition is actually met.
+
 Give a one-sentence rationale naming the specific reason, then decide PASS (passed=true) or FAIL (passed=false)."""
+
+# A hard refusal carries no answer to grade, so the rubric can't be applied. Record a
+# fixed verdict rather than calling the model: the refusal itself is the finding.
+REFUSAL_VERDICT = Verdict(
+    rationale="The model hard-refused (stop_reason='refusal'); there is no answer to grade against this dimension.",
+    passed=False,
+)
 
 
 def judge_dimension(client, code: str, question: str, answer_text: str, ideal: str = "") -> Verdict:
+    if answer_text == REFUSED:
+        return REFUSAL_VERDICT
     name, criterion, pass_def, fail_def = RUBRICS[code]
     user = f"Question:\n{question}\n\nAnswer to judge:\n{answer_text}"
     if ideal:
@@ -113,12 +128,14 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
 
 
 def rag_answer(conn: psycopg.Connection, question: str) -> str:
-    """Answer exactly as app.py's /ask does: search, the relevance gate, then generate."""
+    """Answer exactly as app.py's /ask does: search, the relevance gate, then generate.
+    A hard model refusal (stop_reason='refusal') has no text to return, so we surface
+    the REFUSED sentinel instead of letting the empty content crash the caller."""
     hits = search(conn, question)
     if not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD:
         return NO_ANSWER
     text, _ = answer(question, hits)
-    return text
+    return text or REFUSED
 
 
 def eval_items() -> list[dict]:

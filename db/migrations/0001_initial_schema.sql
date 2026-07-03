@@ -1,6 +1,4 @@
--- Runs automatically the first time the container initializes an empty data
--- volume (docker compose up on a fresh `rag-pgdata`). This is the single
--- source of truth for the schema, so a clean `down -v && up` rebuilds the DB.
+-- Initial schema: documents, chunks (vector + full-text), and the eval tables.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
