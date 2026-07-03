@@ -15,8 +15,8 @@ wheels/
 # Generated grading sheets (rendered from the eval jsonl)
 evals/**/*.html
 
-# Human-eval working files
-evals/**/rag_system_human_eval*
+# Human-eval scratch files (the .jsonl dataset itself is tracked — it's the regression gate's ground truth)
+evals/**/rag_system_human_eval*.txt
 
 # Pulled RAG traces for open coding (regenerate with: trace_viewer.py pull)
 evals/traces.jsonl
@@ -36,3 +36,4 @@ evals/langfuse_traces.jsonl
 
 # Riptide artifacts (cloud-synced)
 .humanlayer/tasks/
+.idea/

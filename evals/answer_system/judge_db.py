@@ -14,6 +14,7 @@ Schema lives in db/init.sql (eval_runs, eval_results).
 Run: uv run python -m evals.answer_system.judge_db [n]
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -27,9 +28,26 @@ from psycopg.types.json import Jsonb
 from evals.answer_system.judge import (
     EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, rag_answer,
 )
-from rag import CLAUDE_MODEL, DB_URL, RELEVANCE_THRESHOLD, TOP_K
+from rag import DB_URL, GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
 
-IN_PRICE, OUT_PRICE = 5.0 / 1_000_000, 25.0 / 1_000_000  # Opus 4.8, per token
+# Judge token price (DeepSeek V4 Pro on OpenRouter): $0.435 / $0.87 per 1M in/out.
+IN_PRICE, OUT_PRICE = 0.435 / 1_000_000, 0.87 / 1_000_000
+
+
+def judge_client(provider: str, model: str):
+    """Build the instructor judge client for the configured provider: Anthropic native,
+    or an OpenAI-compatible model (e.g. DeepSeek V4 Pro via OpenRouter). Both fill the
+    Verdict via structured output, so judge_with_usage doesn't care which it got."""
+    if provider == "openai-compat":
+        # Mode.JSON, not TOOLS: DeepSeek on OpenRouter is unreliable at tool-calling, so
+        # ask for the Verdict as JSON in the content (matches the generation path in rag.py).
+        return instructor.from_provider(
+            f"openai/{model}",
+            base_url=OPENROUTER_BASE_URL,
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            mode=instructor.Mode.JSON,
+        )
+    return instructor.from_provider(f"anthropic/{model}", mode=instructor.Mode.TOOLS)
 
 
 def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: str = ""):
@@ -49,7 +67,12 @@ def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: 
             {"role": "user", "content": user},
         ],
     )
-    return verdict, completion.usage.input_tokens, completion.usage.output_tokens
+    # Anthropic usage exposes input_tokens/output_tokens; OpenAI-compatible (OpenRouter)
+    # exposes prompt_tokens/completion_tokens — accept either so one helper serves both judges.
+    usage = completion.usage
+    in_tok = getattr(usage, "input_tokens", None) or usage.prompt_tokens
+    out_tok = getattr(usage, "output_tokens", None) or usage.completion_tokens
+    return verdict, in_tok, out_tok
 
 
 def git_sha() -> str:
@@ -66,7 +89,7 @@ def main() -> None:
         "judge_model": JUDGE_MODEL,
         "mode": "tools",
         "eval_file": EVAL_FILE.name,
-        "rag_model": CLAUDE_MODEL,
+        "rag_model": GEN_MODEL,
         "top_k": TOP_K,
         "relevance_threshold": RELEVANCE_THRESHOLD,
     }

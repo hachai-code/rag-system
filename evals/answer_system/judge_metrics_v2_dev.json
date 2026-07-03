@@ -1,0 +1,26 @@
+{
+  "n": 10,
+  "agreement": 0.8,
+  "cohens_kappa": 0.615,
+  "confusion": {
+    "human_pass_judge_pass": 4,
+    "human_pass_judge_fail": 0,
+    "human_fail_judge_pass": 2,
+    "human_fail_judge_fail": 4
+  },
+  "disagreements": [
+    {
+      "id": 47,
+      "dim": "C",
+      "human": false,
+      "judge": true
+    },
+    {
+      "id": 68,
+      "dim": "D",
+      "human": false,
+      "judge": true
+    }
+  ],
+  "missing": []
+}

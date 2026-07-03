@@ -15,11 +15,6 @@ tool-calling to fill the model), so a verdict either parses into `Verdict` or re
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
 
-On top of the rubric judge, this module adds reference-free answer scorers (DeepEval
-Faithfulness, Answer Relevancy, a G-Eval encoding of the A-F rubric, and Hallucination)
-that need no gold answer — they score the live answer against the question and the
-retrieved chunks. These feed the eval harness so every later phase has a gold-free ruler.
-
 Run: uv run python -m evals.answer_system.judge [n]
 """
 
@@ -130,66 +125,6 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
             {"role": "user", "content": user},
         ],
     )
-
-
-# --- Reference-free answer scorers (no gold) -------------------------------------
-# DeepEval metrics, all driven by the same Opus judge as the rubric. Inputs are the
-# question, the retrieved chunk texts (context), and the answer — no ideal_answer. The
-# config's judge.metrics list picks which of these run per row (see evals/run.py).
-
-# G-Eval criteria string per rubric code: the rubric's question, PASS, and FAIL folded
-# into one instruction G-Eval can score. Pure string assembly, no model call — tested
-# deterministically in test_assertions.py.
-def geval_rubric_criteria(rubrics_md: dict[str, tuple] = RUBRICS) -> dict[str, str]:
-    return {
-        code: f"{criterion}\nPASS: {pass_def}\nFAIL: {fail_def}"
-        for code, (name, criterion, pass_def, fail_def) in rubrics_md.items()
-    }
-
-
-def _judge_model():
-    """The DeepEval metrics share the rubric judge (Opus 4.8), via DeepEval's Anthropic
-    adapter, so reference-free scores come from the same judge as the rubric verdicts."""
-    from deepeval.models import AnthropicModel
-
-    return AnthropicModel(model=JUDGE_MODEL, temperature=0)
-
-
-def score_answer_reference_free(question, context, answer, metrics) -> dict[str, float]:
-    """Score one answer with the named reference-free metrics, returning {metric: score}.
-
-    `context` is the list of retrieved chunk texts. `metrics` is the config list naming
-    which scorers to run: any of "faithfulness", "answer_relevancy", "geval",
-    "hallucination". Each score is DeepEval's 0-1 float."""
-    from deepeval.metrics import (
-        AnswerRelevancyMetric, FaithfulnessMetric, GEval, HallucinationMetric,
-    )
-    from deepeval.test_case import LLMTestCase, SingleTurnParams
-
-    model = _judge_model()
-    test_case = LLMTestCase(
-        input=question, actual_output=answer, retrieval_context=context, context=context,
-    )
-
-    builders = {
-        "faithfulness": lambda: FaithfulnessMetric(model=model),
-        "answer_relevancy": lambda: AnswerRelevancyMetric(model=model),
-        "hallucination": lambda: HallucinationMetric(model=model),
-        "geval": lambda: GEval(
-            name="rubric",
-            criteria="\n\n".join(geval_rubric_criteria().values()),
-            evaluation_params=[SingleTurnParams.INPUT, SingleTurnParams.ACTUAL_OUTPUT,
-                               SingleTurnParams.RETRIEVAL_CONTEXT],
-            model=model,
-        ),
-    }
-
-    scores = {}
-    for name in metrics:
-        metric = builders[name]()
-        metric.measure(test_case)
-        scores[name] = metric.score
-    return scores
 
 
 def rag_answer(conn: psycopg.Connection, question: str) -> str:

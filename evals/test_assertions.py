@@ -13,12 +13,15 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app import AskRequest, _no_relevant_hits
-from evals.answer_system.judge import (
-    REFUSED, RUBRICS, Verdict, geval_rubric_criteria, judge_dimension,
-)
+from rag.app import AskRequest, _no_relevant_hits
 from evals.metrics import recall_at_k, reciprocal_rank
-from rag import RELEVANCE_THRESHOLD, _citations
+from rag import (
+    RELEVANCE_THRESHOLD,
+    Claim,
+    GroundedAnswer,
+    _chunk_citations,
+    _citations,
+)
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
 # the citation's document_index, exactly as the live code does.
@@ -58,6 +61,30 @@ def test_blocks_without_citations_produce_no_records():
     assert _citations([_block("Unsupported claim.", [])], HITS) == []
 
 
+# The OpenAI-compatible path cites whole retrieved chunks rather than model-written
+# quotes: the model returns claims tagged with chunk indices, and _chunk_citations maps
+# each index back to its hit. cited_text is the chunk itself (grounded by construction),
+# and an out-of-range index — a chunk the model named that wasn't retrieved — is dropped.
+def _grounded(claims: list[dict]) -> GroundedAnswer:
+    return GroundedAnswer.model_validate({"claims": claims})
+
+
+def test_chunk_citation_maps_to_its_hit():
+    grounded = _grounded([{"statement": "It reroutes.", "chunk_indices": [0]}])
+    text, [cite] = _chunk_citations(grounded, HITS)
+    assert text == "It reroutes."
+    assert cite["cited_text"] == HITS[0]["content"]
+    assert (cite["chunk_id"], cite["title"], cite["source"]) == (11, "Day 1", "day1.rtf")
+
+
+def test_out_of_range_chunk_index_is_dropped():
+    grounded = _grounded([{"statement": "Cites a chunk that wasn't retrieved.",
+                           "chunk_indices": [99]}])
+    text, citations = _chunk_citations(grounded, HITS)
+    assert text == "Cites a chunk that wasn't retrieved."
+    assert citations == []
+
+
 def test_no_answer_gate():
     """The gate refuses when nothing was retrieved or the nearest hit is past the
     relevance threshold, and answers otherwise."""
@@ -80,22 +107,3 @@ def test_retrieval_metrics():
     assert recall_at_k([3, 4, 5], {1}) == 0.0
     assert reciprocal_rank([3, 1, 2], {1}) == 0.5
     assert reciprocal_rank([3, 4, 5], {1}) == 0.0
-
-
-def test_geval_criteria_one_per_rubric_code():
-    """The G-Eval criteria map has exactly one entry per rubric dimension, and each
-    folds in that dimension's PASS and FAIL definitions so the scorer judges the same
-    rule the rubric judge does."""
-    criteria = geval_rubric_criteria()
-    assert set(criteria) == set(RUBRICS)
-    for code, (name, criterion, pass_def, fail_def) in RUBRICS.items():
-        assert pass_def in criteria[code]
-        assert fail_def in criteria[code]
-
-
-def test_hard_refusal_returns_verdict_without_calling_the_model():
-    """A hard refusal has no answer to grade, so judge_dimension returns a FAIL Verdict
-    without ever touching the model — passing client=None proves no call is made."""
-    verdict = judge_dimension(client=None, code="A", question="q", answer_text=REFUSED)
-    assert isinstance(verdict, Verdict)
-    assert verdict.passed is False

@@ -11,7 +11,7 @@ export interface Citation {
 export interface Source {
   title: string;
   source: string;
-  distance: number;
+  distance: number | null; // null for keyword-only hits (no vector distance)
 }
 
 // Returned by POST /ask (non-streaming).

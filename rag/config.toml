@@ -1,0 +1,33 @@
+# Base hyperparameters for the RAG system. Loaded once by rag/config.py.
+# Eval experiment configs (evals/configs/*.json) override some of these per run;
+# this file is the production default. EMBED_DIM and BATCH_SIZE stay in code:
+# EMBED_DIM must match VECTOR(1024) in db/init.sql, BATCH_SIZE is a Voyage throughput detail.
+
+[chunking]
+chunk_size = 256      # won the size sweep (evals/chunking-experiments.md)
+chunk_overlap = 50    # tokens carried from the end of one chunk into the next
+
+[embedding]
+voyage_model = "voyage-4"
+
+[retrieval]
+top_k = 25                  # chunks handed to the generator — the main "how much context" lever
+relevance_threshold = 0.7   # cosine distance above which the corpus is treated as "no answer"
+fuse_depth = 120            # candidates pulled per retriever before RRF
+rrf_k = 60                  # Reciprocal Rank Fusion constant (paper value)
+vector_weight = 1.0
+keyword_weight = 0.5        # keyword is the noisier retriever, so it's down-weighted
+rerank_model = "rerank-2.5"
+rerank_depth = 120           # fused candidates fed to the cross-encoder reranker
+source_window = 3           # context chunks shown each side of a cited chunk on click-through
+
+[generation]
+gen_provider = "openai-compat"            # prod runs DeepSeek via OpenRouter
+gen_model = "deepseek/deepseek-v4-pro"    # default (the "pro" picker option)
+gen_models = { pro = "deepseek/deepseek-v4-pro", flash = "deepseek/deepseek-v4-flash" }  # selectable via the /ask `model` field
+answer_format = "prose"                   # "prose" (synthesized answer) or "claims" (structured, per-sentence citations)
+max_tokens = 4096
+structured_max_tokens = 4096              # the JSON-claims path runs longer than raw prose
+
+[ocr]
+ocr_model = "deepseek/deepseek-v4-pro"    # multimodal; transcribes slide images via OpenRouter

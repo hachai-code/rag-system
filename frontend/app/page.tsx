@@ -12,9 +12,22 @@ export default function Home() {
   const [openChip, setOpenChip] = useState<number | null>(null);
   const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
+  const [format, setFormat] = useState<"prose" | "claims">("prose");
+  const [model, setModel] = useState<"pro" | "flash">("pro");
+  const [topK, setTopK] = useState(25);
 
-  async function ask(e: React.FormEvent) {
+  function ask(e: React.FormEvent) {
     e.preventDefault();
+    run(format);
+  }
+
+  // Pick the answer format for the next question. Each format is a separate backend
+  // generation, so this only sets the mode — it takes effect on the next Ask.
+  function toggleFormat() {
+    setFormat((f) => (f === "prose" ? "claims" : "prose"));
+  }
+
+  async function run(fmt: "prose" | "claims") {
     if (!question.trim() || loading) return;
     setAnswer("");
     setCitations([]);
@@ -25,7 +38,7 @@ export default function Home() {
     const res = await fetch(`${API_URL}/ask/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
     });
 
     // Read the SSE stream: frames are separated by a blank line, each one a
@@ -69,8 +82,44 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-10">
-      <h1 className="mb-6 text-2xl font-semibold">innerdance RAG</h1>
+    <main className="mx-auto max-w-4xl px-4 py-10">
+
+      <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
+        <label
+          title="generation model"
+          className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
+        >
+          <span className="font-mono text-xs uppercase tracking-wide text-gray-500">model</span>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value as "pro" | "flash")}
+            className="rounded-full bg-white py-0.5 pl-2 pr-1 font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+          >
+            <option value="pro">pro</option>
+            <option value="flash">flash</option>
+          </select>
+        </label>
+        <label
+          title="top_k — chunks retrieved and handed to the generator"
+          className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
+        >
+          <span className="font-mono text-xs uppercase tracking-wide text-gray-500">top_k</span>
+          <input
+            type="number"
+            min={1}
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value))}
+            className="w-12 rounded-full bg-white py-0.5 text-center font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+          />
+        </label>
+        <button
+          onClick={toggleFormat}
+          disabled={loading}
+          className="text-blue-600 hover:underline disabled:opacity-50"
+        >
+          {format === "prose" ? "Switch to claims + citations" : "Switch to prose"}
+        </button>
+      </div>
 
       <form onSubmit={ask} className="mb-8 flex gap-2">
         <input

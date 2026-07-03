@@ -22,17 +22,14 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-import instructor
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from evals.answer_system.judge import (
-    NO_ANSWER, RUBRICS, SYSTEM, eval_items, score_answer_reference_free,
-)
-from evals.answer_system.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_with_usage
-from rag import DB_URL, SYSTEM_PROMPT, answer, search
+from evals.answer_system.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
+from evals.answer_system.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
+from rag import ANSWER_FORMAT, DB_URL, SYSTEM_PROMPT, answer, rerank_search, search
 
 
 def sha(text: str) -> str:
@@ -51,43 +48,43 @@ def load_config(path: str) -> tuple[dict, str]:
     prompt_sha = sha(gen_prompt)
     rubric_sha = sha(SYSTEM + json.dumps(RUBRICS, sort_keys=True))
 
-    metrics = jud.get("metrics", [])
-
     # The fingerprint: hash every input that changes what a run produces.
     fingerprint = json.dumps({
         "top_k": ret["top_k"],
         "relevance_threshold": ret["relevance_threshold"],
+        "gen_provider": gen["provider"],
         "gen_model": gen["model"],
+        "gen_format": gen.get("format", ANSWER_FORMAT),
         "prompt_sha": prompt_sha,
+        "judge_provider": jud["provider"],
         "judge_model": jud["model"],
         "rubric_sha": rubric_sha,
-        "metrics": sorted(metrics),
     }, sort_keys=True)
 
     stored = {
         "name": cfg.get("name", Path(path).stem),
         "hash": sha(fingerprint)[:12],
         "retrieval": ret,
-        "generation": {"model": gen["model"], "prompt_file": prompt_file, "prompt_sha": prompt_sha[:12]},
-        "judge": {"model": jud["model"], "rubric_sha": rubric_sha[:12], "metrics": metrics},
+        "generation": {"provider": gen["provider"], "model": gen["model"],
+                       "format": gen.get("format", ANSWER_FORMAT),
+                       "prompt_file": prompt_file, "prompt_sha": prompt_sha[:12]},
+        "judge": {"provider": jud["provider"], "model": jud["model"], "rubric_sha": rubric_sha[:12]},
     }
     return stored, gen_prompt
 
 
-def evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt, metrics=()):
+def evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt, gen_format):
     """Run retrieve -> answer -> judge for each item; yield one result dict per item.
     Skips (and logs) an item whose calls fail so one bad item can't abort the run.
-    Shared by run.py (persist + delta) and check_regression.py (the CI gate).
-
-    `metrics` is the config's judge.metrics list — the reference-free scorers (no gold)
-    to run per row against the question, the retrieved chunks, and the answer."""
+    Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
     for item in items:
         try:
-            hits = search(conn, item["question"], k=top_k)
-            if not hits or hits[0]["distance"] > threshold:
+            gate = search(conn, item["question"], k=1)  # cheap coverage check only
+            if not gate or gate[0]["distance"] > threshold:
                 ans = NO_ANSWER
             else:
-                ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt)
+                hits = rerank_search(conn, item["question"], k=top_k)  # hybrid + RRF + rerank
+                ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt, provider=gen_provider, fmt=gen_format)
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0
             for code in item["axial_codes"]:
@@ -96,14 +93,11 @@ def evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt, metri
                 in_tok, out_tok = in_tok + it, out_tok + ot
             latency_ms = int((time.perf_counter() - t0) * 1000)
             cost = round(in_tok * IN_PRICE + out_tok * OUT_PRICE, 6)
-            context = [hit["content"] for hit in hits]
-            ref_free = score_answer_reference_free(item["question"], context, ans, metrics) if metrics else {}
         except Exception as e:
             print(f"  [skip] item {item['id']}: {type(e).__name__}: {e}")
             continue
         yield {"id": item["id"], "question": item["question"], "answer": ans,
-               "scores": scores, "rationales": rationales, "ref_free": ref_free,
-               "cost": cost, "latency_ms": latency_ms}
+               "scores": scores, "rationales": rationales, "cost": cost, "latency_ms": latency_ms}
 
 
 def run_summary(conn, run_id) -> dict:
@@ -141,8 +135,11 @@ def print_summary(conn, run_id, prev_id, cfg) -> None:
 
     dims = sorted(set(cur["pass_rate"]) | (set(prev["pass_rate"]) if prev else set()))
     for dim in dims:
+        cur_rate = cur["pass_rate"].get(dim)
+        if cur_rate is None:  # dimension in a previous run but not exercised in this one
+            continue
         prev_rate = prev["pass_rate"].get(dim) if prev else None
-        print(f"{dim:<14}" + _delta(cur["pass_rate"][dim], prev_rate, pct))
+        print(f"{dim:<14}" + _delta(cur_rate, prev_rate, pct))
 
     print(f"{'questions':<14}{cur['n']:>9}{(prev['n'] if prev else '—'):>9}")
     print(f"{'cost':<14}" + _delta(cur["cost"], prev["cost"] if prev else None, lambda x: f"${x:.4f}"))
@@ -165,9 +162,10 @@ def main() -> None:
 
     top_k = cfg["retrieval"]["top_k"]
     threshold = cfg["retrieval"]["relevance_threshold"]
+    gen_provider = cfg["generation"]["provider"]
     gen_model = cfg["generation"]["model"]
-    metrics = cfg["judge"].get("metrics", [])
-    client = instructor.from_provider(f"anthropic/{cfg['judge']['model']}", mode=instructor.Mode.TOOLS)
+    gen_format = cfg["generation"].get("format", ANSWER_FORMAT)
+    client = judge_client(cfg["judge"]["provider"], cfg["judge"]["model"])
 
     with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
         register_vector(conn)
@@ -179,23 +177,18 @@ def main() -> None:
         conn.commit()
 
         judged = 0
-        for r in evaluate(conn, client, items, top_k, threshold, gen_model, gen_prompt, metrics):
-            # Reference-free scores ride in the scores JSONB next to the rubric verdicts:
-            # rubric keys are single letters A-F, ref-free keys are words, so they don't
-            # collide, and run_summary's mean works for both bools and floats.
-            all_scores = {**r["scores"], **r["ref_free"]}
+        for r in evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt, gen_format):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (run_id, r["id"], r["question"], r["answer"],
-                 Jsonb(all_scores), Jsonb(r["rationales"]), r["cost"], r["latency_ms"]),
+                 Jsonb(r["scores"]), Jsonb(r["rationales"]), r["cost"], r["latency_ms"]),
             )
             conn.commit()
             judged += 1
             marks = " ".join(f"{c}:{'P' if p else 'F'}" for c, p in r["scores"].items())
-            ref = " ".join(f"{m}:{s:.2f}" for m, s in r["ref_free"].items())
-            print(f"  [{judged:>2}/{len(items)}] item {r['id']:>2}  {marks}  {ref}  ${r['cost']:.4f}  {r['question'][:36]}")
+            print(f"  [{judged:>2}/{len(items)}] item {r['id']:>2}  {marks}  ${r['cost']:.4f}  {r['question'][:36]}")
 
         print_summary(conn, run_id, prev_id, cfg)
 
