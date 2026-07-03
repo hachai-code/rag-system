@@ -1,0 +1,6 @@
+{
+  "name": "hype",
+  "retrieval": {"top_k": 5, "relevance_threshold": 0.7, "method": "rerank", "hype": true},
+  "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash", "prompt_file": null, "format": "claims"},
+  "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro"}
+}
