@@ -14,6 +14,9 @@ import pytest
 from pydantic import ValidationError
 
 from app import AskRequest, _no_relevant_hits
+from evals.answer_system.judge import (
+    REFUSED, RUBRICS, Verdict, geval_rubric_criteria, judge_dimension,
+)
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import RELEVANCE_THRESHOLD, _citations
 
@@ -77,3 +80,22 @@ def test_retrieval_metrics():
     assert recall_at_k([3, 4, 5], {1}) == 0.0
     assert reciprocal_rank([3, 1, 2], {1}) == 0.5
     assert reciprocal_rank([3, 4, 5], {1}) == 0.0
+
+
+def test_geval_criteria_one_per_rubric_code():
+    """The G-Eval criteria map has exactly one entry per rubric dimension, and each
+    folds in that dimension's PASS and FAIL definitions so the scorer judges the same
+    rule the rubric judge does."""
+    criteria = geval_rubric_criteria()
+    assert set(criteria) == set(RUBRICS)
+    for code, (name, criterion, pass_def, fail_def) in RUBRICS.items():
+        assert pass_def in criteria[code]
+        assert fail_def in criteria[code]
+
+
+def test_hard_refusal_returns_verdict_without_calling_the_model():
+    """A hard refusal has no answer to grade, so judge_dimension returns a FAIL Verdict
+    without ever touching the model — passing client=None proves no call is made."""
+    verdict = judge_dimension(client=None, code="A", question="q", answer_text=REFUSED)
+    assert isinstance(verdict, Verdict)
+    assert verdict.passed is False

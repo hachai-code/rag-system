@@ -15,6 +15,11 @@ tool-calling to fill the model), so a verdict either parses into `Verdict` or re
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
 
+On top of the rubric judge, this module adds reference-free answer scorers (DeepEval
+Faithfulness, Answer Relevancy, a G-Eval encoding of the A-F rubric, and Hallucination)
+that need no gold answer — they score the live answer against the question and the
+retrieved chunks. These feed the eval harness so every later phase has a gold-free ruler.
+
 Run: uv run python -m evals.answer_system.judge [n]
 """
 
@@ -34,6 +39,10 @@ EVAL_FILE = Path(__file__).parent / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "judgments.jsonl"
 JUDGE_MODEL = "claude-opus-4-8"  # Opus-class: a weak judge is worse than no judge
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
+# Sentinel for a hard model refusal (stop_reason="refusal"): the API returns no text,
+# so there is nothing to judge against the rubric. Items 70-F/74-E hit this — we record
+# the refusal as the answer so the row produces a verdict instead of crashing.
+REFUSED = "[hard refusal: the model declined to answer]"
 
 
 class Verdict(BaseModel):
@@ -54,9 +63,9 @@ RUBRICS = {
     ),
     "B": (
         "Retrieval Quality",
-        "Is the answer grounded in the correct, on-topic context — the right subject (innerdance vs. kundalini), the right speaker's turn, and enough relevant material to answer fully?",
+        "Is the answer grounded in context that is on-topic for the question asked, drawn from the right speaker's turn, and complete enough to answer fully?",
         "Grounded in on-topic context from the correct speaker/turn, with no obviously missing key information.",
-        "Draws on adjacent-but-wrong-topic material (e.g. kundalini for an innerdance question), uses the wrong speaker, or is incomplete because context is missing.",
+        "Draws on adjacent-but-wrong-topic material, uses the wrong speaker, or is incomplete because context is missing.",
     ),
     "C": (
         "Generation Quality",
@@ -92,10 +101,21 @@ Criterion: {criterion}
 PASS: {pass_def}
 FAIL: {fail_def}
 
+Judge only against the criterion above. A coherent, readable answer is not "garbled" or "incoherent" — do not invent a fluency objection that the criterion doesn't name. FAIL only when the criterion's FAIL condition is actually met.
+
 Give a one-sentence rationale naming the specific reason, then decide PASS (passed=true) or FAIL (passed=false)."""
+
+# A hard refusal carries no answer to grade, so the rubric can't be applied. Record a
+# fixed verdict rather than calling the model: the refusal itself is the finding.
+REFUSAL_VERDICT = Verdict(
+    rationale="The model hard-refused (stop_reason='refusal'); there is no answer to grade against this dimension.",
+    passed=False,
+)
 
 
 def judge_dimension(client, code: str, question: str, answer_text: str, ideal: str = "") -> Verdict:
+    if answer_text == REFUSED:
+        return REFUSAL_VERDICT
     name, criterion, pass_def, fail_def = RUBRICS[code]
     user = f"Question:\n{question}\n\nAnswer to judge:\n{answer_text}"
     if ideal:
@@ -112,13 +132,75 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
     )
 
 
+# --- Reference-free answer scorers (no gold) -------------------------------------
+# DeepEval metrics, all driven by the same Opus judge as the rubric. Inputs are the
+# question, the retrieved chunk texts (context), and the answer — no ideal_answer. The
+# config's judge.metrics list picks which of these run per row (see evals/run.py).
+
+# G-Eval criteria string per rubric code: the rubric's question, PASS, and FAIL folded
+# into one instruction G-Eval can score. Pure string assembly, no model call — tested
+# deterministically in test_assertions.py.
+def geval_rubric_criteria(rubrics_md: dict[str, tuple] = RUBRICS) -> dict[str, str]:
+    return {
+        code: f"{criterion}\nPASS: {pass_def}\nFAIL: {fail_def}"
+        for code, (name, criterion, pass_def, fail_def) in rubrics_md.items()
+    }
+
+
+def _judge_model():
+    """The DeepEval metrics share the rubric judge (Opus 4.8), via DeepEval's Anthropic
+    adapter, so reference-free scores come from the same judge as the rubric verdicts."""
+    from deepeval.models import AnthropicModel
+
+    return AnthropicModel(model=JUDGE_MODEL, temperature=0)
+
+
+def score_answer_reference_free(question, context, answer, metrics) -> dict[str, float]:
+    """Score one answer with the named reference-free metrics, returning {metric: score}.
+
+    `context` is the list of retrieved chunk texts. `metrics` is the config list naming
+    which scorers to run: any of "faithfulness", "answer_relevancy", "geval",
+    "hallucination". Each score is DeepEval's 0-1 float."""
+    from deepeval.metrics import (
+        AnswerRelevancyMetric, FaithfulnessMetric, GEval, HallucinationMetric,
+    )
+    from deepeval.test_case import LLMTestCase, SingleTurnParams
+
+    model = _judge_model()
+    test_case = LLMTestCase(
+        input=question, actual_output=answer, retrieval_context=context, context=context,
+    )
+
+    builders = {
+        "faithfulness": lambda: FaithfulnessMetric(model=model),
+        "answer_relevancy": lambda: AnswerRelevancyMetric(model=model),
+        "hallucination": lambda: HallucinationMetric(model=model),
+        "geval": lambda: GEval(
+            name="rubric",
+            criteria="\n\n".join(geval_rubric_criteria().values()),
+            evaluation_params=[SingleTurnParams.INPUT, SingleTurnParams.ACTUAL_OUTPUT,
+                               SingleTurnParams.RETRIEVAL_CONTEXT],
+            model=model,
+        ),
+    }
+
+    scores = {}
+    for name in metrics:
+        metric = builders[name]()
+        metric.measure(test_case)
+        scores[name] = metric.score
+    return scores
+
+
 def rag_answer(conn: psycopg.Connection, question: str) -> str:
-    """Answer exactly as app.py's /ask does: search, the relevance gate, then generate."""
+    """Answer exactly as app.py's /ask does: search, the relevance gate, then generate.
+    A hard model refusal (stop_reason='refusal') has no text to return, so we surface
+    the REFUSED sentinel instead of letting the empty content crash the caller."""
     hits = search(conn, question)
     if not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD:
         return NO_ANSWER
     text, _ = answer(question, hits)
-    return text
+    return text or REFUSED
 
 
 def eval_items() -> list[dict]:

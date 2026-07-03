@@ -2,5 +2,8 @@
   "name": "baseline",
   "retrieval": {"top_k": 5, "relevance_threshold": 0.7},
   "generation": {"model": "claude-sonnet-4-6", "prompt_file": null},
-  "judge": {"model": "claude-opus-4-8"}
+  "judge": {
+    "model": "claude-opus-4-8",
+    "metrics": ["faithfulness", "answer_relevancy", "geval", "hallucination"]
+  }
 }
