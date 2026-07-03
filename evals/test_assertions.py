@@ -21,6 +21,10 @@ from rag import (
     GroundedAnswer,
     _chunk_citations,
     _citations,
+    get_retriever,
+    hybrid_search,
+    rerank_search,
+    search,
 )
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
@@ -99,6 +103,14 @@ def test_question_length_is_bounded():
         AskRequest(question="")
     with pytest.raises(ValidationError):
         AskRequest(question="x" * 1001)
+
+
+def test_get_retriever_maps_method_to_function():
+    """The retrieval.method config string picks the funnel depth; each maps to its
+    retriever so configs can A/B vector vs hybrid vs rerank without a code edit."""
+    assert get_retriever("vector") is search
+    assert get_retriever("hybrid") is hybrid_search
+    assert get_retriever("rerank") is rerank_search
 
 
 def test_retrieval_metrics():

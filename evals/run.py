@@ -29,7 +29,7 @@ from psycopg.types.json import Jsonb
 
 from evals.answer_system.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
 from evals.answer_system.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
-from rag import ANSWER_FORMAT, DB_URL, SYSTEM_PROMPT, answer, rerank_search, search
+from rag import ANSWER_FORMAT, DB_URL, SYSTEM_PROMPT, answer, get_retriever, search
 
 
 def sha(text: str) -> str:
@@ -52,6 +52,7 @@ def load_config(path: str) -> tuple[dict, str]:
     fingerprint = json.dumps({
         "top_k": ret["top_k"],
         "relevance_threshold": ret["relevance_threshold"],
+        "method": ret.get("method", "rerank"),
         "gen_provider": gen["provider"],
         "gen_model": gen["model"],
         "gen_format": gen.get("format", ANSWER_FORMAT),
@@ -73,7 +74,7 @@ def load_config(path: str) -> tuple[dict, str]:
     return stored, gen_prompt
 
 
-def evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt, gen_format):
+def evaluate(conn, client, items, top_k, threshold, method, gen_provider, gen_model, gen_prompt, gen_format):
     """Run retrieve -> answer -> judge for each item; yield one result dict per item.
     Skips (and logs) an item whose calls fail so one bad item can't abort the run.
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
@@ -83,7 +84,7 @@ def evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen
             if not gate or gate[0]["distance"] > threshold:
                 ans = NO_ANSWER
             else:
-                hits = rerank_search(conn, item["question"], k=top_k)  # hybrid + RRF + rerank
+                hits = get_retriever(method)(conn, item["question"], k=top_k)
                 ans, _ = answer(item["question"], hits, model=gen_model, system=gen_prompt, provider=gen_provider, fmt=gen_format)
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0
@@ -162,6 +163,7 @@ def main() -> None:
 
     top_k = cfg["retrieval"]["top_k"]
     threshold = cfg["retrieval"]["relevance_threshold"]
+    method = cfg["retrieval"].get("method", "rerank")
     gen_provider = cfg["generation"]["provider"]
     gen_model = cfg["generation"]["model"]
     gen_format = cfg["generation"].get("format", ANSWER_FORMAT)
@@ -177,7 +179,7 @@ def main() -> None:
         conn.commit()
 
         judged = 0
-        for r in evaluate(conn, client, items, top_k, threshold, gen_provider, gen_model, gen_prompt, gen_format):
+        for r in evaluate(conn, client, items, top_k, threshold, method, gen_provider, gen_model, gen_prompt, gen_format):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)

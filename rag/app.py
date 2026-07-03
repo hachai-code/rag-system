@@ -23,7 +23,7 @@ from .query.retrieve import (
     RELEVANCE_THRESHOLD,
     RERANK_DEPTH,
     TOP_K,
-    rerank_search,
+    get_retriever,
     search,
     source_passage,
 )
@@ -68,6 +68,8 @@ class AskRequest(BaseModel):
     format: Literal["prose", "claims"] = ANSWER_FORMAT
     # Generation model picker; resolved to an OpenRouter id via GEN_MODELS.
     model: Literal["pro", "flash"] = "pro"
+    # Retriever funnel depth; production default is the full hybrid + RRF + rerank stack.
+    method: Literal["vector", "hybrid", "rerank"] = "rerank"
     # Chunks handed to the generator (the citable pool). Defaults to config top_k;
     # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
     top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K
@@ -130,7 +132,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             if _no_relevant_hits(gate):
                 span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
+            hits = get_retriever(body.method)(conn, body.question, k=body.top_k)
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
         span.update(output=text)
@@ -159,7 +161,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                     yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
                     return
-                hits = rerank_search(conn, body.question, k=body.top_k)  # hybrid + RRF + rerank
+                hits = get_retriever(body.method)(conn, body.question, k=body.top_k)
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
             for event in answer_stream(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format):

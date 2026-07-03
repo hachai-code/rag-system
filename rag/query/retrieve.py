@@ -117,6 +117,16 @@ def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
     return [candidates[r.index] for r in reranked.results]
 
 
+# Retrieval stages share the (conn, question, k) signature, so a config can pick the
+# funnel depth — vector-only, +keyword/RRF, or +rerank — without a code edit.
+RETRIEVERS = {"vector": search, "hybrid": hybrid_search, "rerank": rerank_search}
+
+
+def get_retriever(method: str = "rerank"):
+    """Map a retrieval.method config string to its retriever function."""
+    return RETRIEVERS[method]
+
+
 def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:
     """How many trailing lines of prefix_lines equal the leading lines of next_lines.
 

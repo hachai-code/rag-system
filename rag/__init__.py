@@ -26,6 +26,7 @@ from rag.query.answer import (
 from rag.query.retrieve import (
     RELEVANCE_THRESHOLD,
     TOP_K,
+    get_retriever,
     hybrid_search,
     keyword_search,
     rerank_search,
@@ -41,6 +42,7 @@ __all__ = [
     "keyword_search",
     "hybrid_search",
     "rerank_search",
+    "get_retriever",
     "source_passage",
     "ANSWER_FORMAT",
     "GEN_MODEL",
