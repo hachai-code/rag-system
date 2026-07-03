@@ -4,17 +4,27 @@ Three-stage retrieval — hybrid (vector + keyword, fused with RRF) then rerank.
 README "Retrieval design" for the weights, thresholds, and why each stage exists.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import psycopg
 import voyageai
 
 from ..config import CONFIG
+from ..db import connect
+from .answer import complete
 
 VOYAGE_MODEL = CONFIG.voyage_model
 EMBED_DIM = 1024
 TOP_K = CONFIG.top_k
 METHOD = CONFIG.method  # production default retriever (vector | hybrid | rerank)
+
+# Runtime query-enhancement toggles (config.toml [retrieval]). "" means off.
+QUERY_ENHANCEMENT = CONFIG.query_enhancement or None
+PARENT_DOCUMENT = CONFIG.parent_document
+# Cheap model for HyDE hypotheticals and multi-query paraphrases (the "flash" picker).
+FLASH_MODEL = CONFIG.gen_models["flash"]
+N_VARIANTS = 4  # multi-query paraphrases fused with the original question
 
 # Distance beyond which the corpus is treated as not covering the question (README).
 RELEVANCE_THRESHOLD = CONFIG.relevance_threshold
@@ -87,31 +97,45 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
     ).fetchall()
 
 
+def rrf(ranked_lists: list[tuple[float, list[dict]]], k: int = RRF_K) -> list[dict]:
+    """Weighted Reciprocal Rank Fusion: merge several ranked hit lists into one.
+
+    Each chunk scores sum(weight / (k + rank)) over the lists it appears in — fusing on
+    rank (not score) is what lets it blend cosine distance, ts_rank, and multiple query
+    phrasings. Returns all fused hits, best first; callers slice to their top_k."""
+    scores: dict[int, float] = {}
+    chunks: dict[int, dict] = {}
+    for weight, hits in ranked_lists:
+        for rank, hit in enumerate(hits, 1):
+            scores[hit["id"]] = scores.get(hit["id"], 0.0) + weight / (k + rank)
+            chunks[hit["id"]] = hit
+    return [chunks[cid] for cid in sorted(scores, key=scores.get, reverse=True)]
+
+
 def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
     """Fuse vector and keyword rankings with weighted Reciprocal Rank Fusion.
 
-    Each chunk scores sum(weight / (RRF_K + rank)) over the rankings it appears in.
-    Fusing on rank (not score) is what lets it blend cosine distance and ts_rank."""
-    rankings = [
+    Keyword is down-weighted (README "Retrieval design"); the two retrievers pull
+    FUSE_DEPTH candidates each before rrf() blends them."""
+    ranked_lists = [
         (VECTOR_WEIGHT, search(conn, question, FUSE_DEPTH)),
         (KEYWORD_WEIGHT, keyword_search(conn, question, FUSE_DEPTH)),
     ]
-    scores: dict[int, float] = {}
-    chunks: dict[int, dict] = {}
-    for weight, hits in rankings:
-        for rank, hit in enumerate(hits, 1):
-            scores[hit["id"]] = scores.get(hit["id"], 0.0) + weight / (RRF_K + rank)
-            chunks[hit["id"]] = hit
-    top_ids = sorted(scores, key=scores.get, reverse=True)[:k]
-    return [chunks[cid] for cid in top_ids]
+    return rrf(ranked_lists)[:k]
 
 
-def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+def rerank_search(
+    conn: psycopg.Connection, question: str, k: int = TOP_K, retrieve_query: str | None = None
+) -> list[dict]:
     """Hybrid-retrieve RERANK_DEPTH candidates, cross-encoder rerank, keep k.
 
     The reranker reads the (question, chunk) pair together — a sharper signal than the
-    independent first-stage scores — but is too slow to run over the whole corpus."""
-    candidates = hybrid_search(conn, question, RERANK_DEPTH)
+    independent first-stage scores — but is too slow to run over the whole corpus.
+
+    `retrieve_query` overrides the stage-1 query only (the HyDE hypothetical, which lands
+    nearer the answer chunks in embedding space); the reranker still scores against the
+    real `question`, where the cross-encoder is sharpest."""
+    candidates = hybrid_search(conn, retrieve_query or question, RERANK_DEPTH)
     reranked = _voyage.rerank(
         question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
     )
@@ -126,6 +150,120 @@ RETRIEVERS = {"vector": search, "hybrid": hybrid_search, "rerank": rerank_search
 def get_retriever(method: str = METHOD):
     """Map a retrieval.method config string to its retriever function."""
     return RETRIEVERS[method]
+
+
+HYDE_PROMPT = (
+    "Write a short, direct passage that plausibly answers this question about the "
+    "innerdance corpus, as if excerpted from source material. Do not hedge or note "
+    "uncertainty — just write the hypothetical answer.\n\nQuestion: {question}"
+)
+
+MULTI_QUERY_PROMPT = (
+    "Rewrite this question as {n} alternative search queries that ask the same thing "
+    "in different words, to widen retrieval. One per line, no numbering or "
+    "commentary.\n\nQuestion: {question}"
+)
+
+
+def hyde_query(question: str) -> str:
+    """A hypothetical answer to retrieve on instead of the question (HyDE).
+
+    A made-up answer lands nearer the real answer chunks in embedding space than the
+    terse question does, so retrieving on it surfaces passages the bare question ranks
+    too low."""
+    return complete(HYDE_PROMPT.format(question=question), FLASH_MODEL)
+
+
+@lru_cache(maxsize=256)
+def multi_query(question: str) -> tuple[str, ...]:
+    """Up to N_VARIANTS paraphrases of the question, for retrieval fusion.
+
+    Different phrasings surface different chunks; fusing their rankings recovers a
+    passage any single wording would miss. Cached so a repeated question in a run
+    doesn't re-call the LLM."""
+    text = complete(MULTI_QUERY_PROMPT.format(n=N_VARIANTS, question=question), FLASH_MODEL)
+    variants = [line.strip() for line in text.splitlines() if line.strip()]
+    return tuple(variants[:N_VARIANTS])
+
+
+def _parent_range(chunk_index: int, window: int) -> tuple[int, int]:
+    """The inclusive chunk_index span to pull around a matched child chunk."""
+    return chunk_index - window, chunk_index + window
+
+
+def expand_to_parent(
+    conn: psycopg.Connection, hits: list[dict], window: int = SOURCE_WINDOW
+) -> list[dict]:
+    """Widen each matched child chunk to its neighbours in the same document.
+
+    A 256-token child can match on a phrase whose answer lives in the surrounding
+    passage — a transcript utterance whose reply is the next chunk. This pulls the
+    ±window chunks around each hit (same neighbour navigation as source_passage), so the
+    generator sees the parent section. Duplicates are dropped; added neighbours carry no
+    retrieval distance."""
+    hit_distance = {h["id"]: h.get("distance") for h in hits}
+    expanded: dict[int, dict] = {}
+    for hit in hits:
+        target = conn.execute(
+            "SELECT document_id, chunk_index FROM chunks WHERE id = %s", (hit["id"],)
+        ).fetchone()
+        lo, hi = _parent_range(target["chunk_index"], window)
+        rows = conn.execute(
+            """SELECT c.id, d.title, d.source, c.content
+               FROM chunks c JOIN documents d ON d.id = c.document_id
+               WHERE c.document_id = %s AND c.chunk_index BETWEEN %s AND %s
+               ORDER BY c.chunk_index""",
+            (target["document_id"], lo, hi),
+        ).fetchall()
+        for row in rows:
+            expanded.setdefault(row["id"], {**row, "distance": hit_distance.get(row["id"])})
+    return list(expanded.values())
+
+
+def _retrieve_fresh(retriever, question: str, k: int) -> list[dict]:
+    """Run one retrieval on its own connection — multi-query fans out across threads,
+    and psycopg connections are not shared between them."""
+    with connect() as conn:
+        return retriever(conn, question, k)
+
+
+def _multi_query_search(question: str, method: str, k: int) -> list[dict]:
+    """Retrieve for the question and each paraphrase concurrently, then RRF-fuse."""
+    queries = (question,) + multi_query(question)
+    retriever = get_retriever(method)
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        ranked_lists = [
+            (1.0, hits)
+            for hits in pool.map(lambda q: _retrieve_fresh(retriever, q, FUSE_DEPTH), queries)
+        ]
+    return rrf(ranked_lists)[:k]
+
+
+def retrieve(
+    conn: psycopg.Connection,
+    question: str,
+    k: int = TOP_K,
+    method: str = METHOD,
+    query_enhancement: str | None = QUERY_ENHANCEMENT,
+    parent_document: bool = PARENT_DOCUMENT,
+) -> list[dict]:
+    """The retrieval entry point: run `method`, with optional query enhancement and
+    parent-document expansion. app.py and the eval runner call this so a config, not a
+    code edit, picks the retrieval strategy."""
+    if query_enhancement == "hyde":
+        hypothetical = hyde_query(question)
+        if method == "rerank":
+            # HyDE lifts stage-1 recall; rerank on the real question for precision.
+            hits = rerank_search(conn, question, k, retrieve_query=hypothetical)
+        else:
+            hits = get_retriever(method)(conn, hypothetical, k)
+    elif query_enhancement == "multi_query":
+        hits = _multi_query_search(question, method, k)
+    else:
+        hits = get_retriever(method)(conn, question, k)
+    if parent_document:
+        hits = expand_to_parent(conn, hits)
+    return hits
 
 
 def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:

@@ -12,6 +12,8 @@ voyage_model = "voyage-4"
 
 [retrieval]
 method = "rerank"           # retriever funnel: vector | hybrid | rerank (the full stack)
+query_enhancement = ""      # "" (off) | "hyde" | "multi_query" — runtime query rewriting
+parent_document = false     # widen each hit to its neighbouring chunks before answering
 top_k = 25                  # chunks handed to the generator — the main "how much context" lever
 relevance_threshold = 0.7   # cosine distance above which the corpus is treated as "no answer"
 fuse_depth = 120            # candidates pulled per retriever before RRF

@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
+from rag.query.retrieve import _parent_range
 from evals.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
@@ -24,6 +25,7 @@ from rag import (
     get_retriever,
     hybrid_search,
     rerank_search,
+    rrf,
     search,
 )
 
@@ -119,3 +121,21 @@ def test_retrieval_metrics():
     assert recall_at_k([3, 4, 5], {1}) == 0.0
     assert reciprocal_rank([3, 1, 2], {1}) == 0.5
     assert reciprocal_rank([3, 4, 5], {1}) == 0.0
+
+
+def test_rrf_fuses_ranked_lists_into_one_order():
+    """Weighted RRF scores each chunk sum(weight / (k + rank)) over the lists it appears
+    in, so agreement across lists and a heavier weight both lift a chunk. The shared
+    helper drives hybrid_search and multi-query fusion alike."""
+    vector = [{"id": 1}, {"id": 2}, {"id": 3}]  # ranks 1, 2, 3
+    keyword = [{"id": 3}, {"id": 4}]            # ranks 1, 2
+    fused = [h["id"] for h in rrf([(1.0, vector), (0.5, keyword)], k=60)]
+    # 3 wins on cross-list agreement; 1 > 2 by rank; 4 last on the down-weighted list.
+    assert fused == [3, 1, 2, 4]
+
+
+def test_parent_range_spans_neighbours():
+    """expand_to_parent pulls the ±window chunks around a matched child by chunk_index —
+    the same neighbour window source_passage uses for click-through."""
+    assert _parent_range(10, window=3) == (7, 13)
+    assert _parent_range(0, window=2) == (-2, 2)  # SQL BETWEEN simply matches no chunk < 0

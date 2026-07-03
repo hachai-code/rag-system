@@ -15,6 +15,8 @@ class Config:
     chunk_overlap: int
     voyage_model: str
     method: str
+    query_enhancement: str
+    parent_document: bool
     top_k: int
     relevance_threshold: float
     fuse_depth: int

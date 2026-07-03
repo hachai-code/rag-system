@@ -56,6 +56,8 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
         for r in evaluate(conn, client,
                           items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
                           cfg["retrieval"].get("method", "rerank"),
+                          cfg["retrieval"].get("query_enhancement"),
+                          cfg["retrieval"].get("parent_document", False),
                           cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt,
                           cfg["generation"].get("format", ANSWER_FORMAT)):
             succeeded += 1

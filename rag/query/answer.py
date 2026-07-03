@@ -46,6 +46,19 @@ SYSTEM_PROMPT = (
 )
 
 
+def complete(prompt: str, model: str) -> str:
+    """A bare OpenAI-compatible completion returning raw text — the lightweight
+    counterpart to answer() for auxiliary generation (HyDE hypotheticals, multi-query
+    paraphrases) that needs no citation scaffolding. Runs the same OpenRouter seam."""
+    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.choices[0].message.content
+
+
 def context_documents(hits: list[dict]) -> list[dict]:
     """Each retrieved chunk as a citable document block. Passing chunks as separate
     documents is what lets the Citations API map `document_index` back to hits[index]."""
