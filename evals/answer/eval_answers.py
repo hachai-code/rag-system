@@ -6,7 +6,7 @@ same question over the full corpus. Each row is written with an empty `grade` fo
 you to fill in by hand — compare `rag_answer` to `reference_answer` and mark it.
 
 This covers the *answering* path end to end (retrieval + generation), where
-search_system/ covers retrieval alone. The reference is grounded in the gold chunk,
+search/ covers retrieval alone. The reference is grounded in the gold chunk,
 and `retrieved_gold` records whether the app actually retrieved that chunk — so when
 an answer is bad you can tell a retrieval miss from a generation failure.
 
@@ -18,7 +18,7 @@ Runs are resumable: each row is appended and flushed as it completes, so a crash
 loses at most the in-flight item. Re-running tops the file up to N, skipping chunks
 already present — delete answer_feedback.jsonl to start fresh.
 
-Run: uv run python -m evals.answer_system.eval_answers [n]
+Run: uv run python -m evals.answer.eval_answers [n]
 """
 
 import json
@@ -32,7 +32,7 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
 
-OUT_FILE = Path(__file__).parent / "answer_feedback.jsonl"
+OUT_FILE = Path(__file__).parent / "data" / "answer_feedback.jsonl"
 N_ITEMS = 25  # each item is a Sonnet + an Opus + the app's own call, so the default is modest
 PER_DOC = 10
 MIN_CHARS = 300

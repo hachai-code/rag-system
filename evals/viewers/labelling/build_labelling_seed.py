@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-BASE = Path("/Users/hachaipham/Documents/Code/rag-system/evals/answer_system")
+BASE = Path(__file__).resolve().parents[2] / "answer" / "data"
 EVAL = BASE / "rag_system_human_eval.jsonl"
 JUDG = BASE / "judgments.jsonl"
 TXT = BASE / "rag_system_human_eval.txt"

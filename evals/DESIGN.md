@@ -67,25 +67,13 @@ Hamel reserves this for mature products with live traffic, which we are not. Rec
 
 ## Structure — where the code lives
 
-Everything eval-related lives under `evals/`:
+Everything eval-related lives under `evals/`, split by *what it evaluates*:
+`search/` (retrieval), `answer/` (the answering path), `viewers/` (the
+row-review UIs), with the cross-cutting orchestrator, CI gate, shared test bank
+and schema at the top. **See [`README.md`](README.md) for the full file map** —
+it's kept in sync with the tree so this design doc doesn't have to be.
 
-```
-evals/
-  __init__.py            makes evals a package, so scripts run as `-m evals.x`
-  DESIGN.md              this file
-  eval_set.jsonl         the test bank (questions, ideal answers, gold labels)
-  test_assertions.py     Level-1 pytest (run with `uv run pytest`)
-  metrics.py             retrieval metrics (recall@5, MRR)
-  metrics_log.jsonl      run-over-run log
-  compare_retrieval.py   vector-vs-keyword diagnostic on hard queries
-  gen_eval.py            draft-answer generator (input to grading)
-  grade.py / grade.html  human grading harness
-  judge.py               LLM-as-judge (to build, step 3)
-  failure-analysis.md    error-analysis notes
-  chunking-experiments.md  retrieval-change log
-```
-
-The app/pipeline modules live in the `rag/` package (`rag/query/retrieve.py`, `rag/query/answer.py`, `rag/app.py`, `rag/indexing/{ingest,chunk,embed}.py`); `rag/__init__.py` re-exports the public API, so the eval scripts still `import rag` unchanged. Run everything as modules from the repo root (e.g. `uv run python -m evals.metrics`), and each script anchors its data files with `Path(__file__).parent` so cwd doesn't matter. CI is `.github/workflows/ci.yml`.
+The app/pipeline modules live in the `rag/` package (`rag/query/retrieve.py`, `rag/query/answer.py`, `rag/app.py`, `rag/indexing/{ingest,chunk,embed}.py`); `rag/__init__.py` re-exports the public API, so the eval scripts still `import rag` unchanged. Run everything as modules from the repo root (e.g. `uv run python -m evals.search.metrics`), and each script anchors its data files relative to `Path(__file__)` so cwd doesn't matter. CI is `.github/workflows/ci.yml`.
 
 ### Extraction to `ai-utils` at month's end (target 2026-06-30)
 

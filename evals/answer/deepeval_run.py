@@ -1,6 +1,6 @@
 """DeepEval RAG-triad metrics over the innerdance eval set, judged by DeepSeek V4 Pro.
 
-Additive to the A-F rubric judges (answer_system/judge.py): those stay binary and
+Additive to the A-F rubric judges (answer/judge.py): those stay binary and
 Anthropic-Opus-judged; this adds the standard continuous RAG-triad scores DeepEval
 gives off the shelf — faithfulness, answer relevancy, and contextual
 relevancy/precision/recall — each a 0-1 score + a one-line reason.
@@ -16,8 +16,8 @@ model-ID table.
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
 
-Run:   uv run python -m evals.deepeval_run [n]      # judge first n items (default all)
-Smoke: uv run python -m evals.deepeval_run smoke    # one fixed case, assert wiring works
+Run:   uv run python -m evals.answer.deepeval_run [n]      # judge first n items (default all)
+Smoke: uv run python -m evals.answer.deepeval_run smoke    # one fixed case, assert wiring works
 """
 
 import json
@@ -40,11 +40,11 @@ from deepeval.metrics import (
 )
 from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
-from evals.answer_system.judge import NO_ANSWER
+from evals.answer.judge import NO_ANSWER
 from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
 
-EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
-OUT_FILE = Path(__file__).parent / "deepeval_results.jsonl"
+EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
+OUT_FILE = Path(__file__).parent / "data" / "deepeval_results.jsonl"
 JUDGE_MODEL = "deepseek-v4-pro"
 
 

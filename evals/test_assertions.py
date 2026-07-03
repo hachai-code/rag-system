@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
 from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
-from evals.metrics import recall_at_k, reciprocal_rank
+from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
     Claim,

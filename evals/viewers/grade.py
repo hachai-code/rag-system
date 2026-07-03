@@ -9,7 +9,7 @@ Reuses the stored `draft_answer` (the RAG answer from gen_eval.py) and re-runs
 search() to show the chunks it was based on — retrieval is deterministic, so the
 chunks match the answer. Open evals/grade.html in a browser afterwards.
 
-Run: uv run python -m evals.grade
+Run: uv run python -m evals.viewers.grade
 """
 
 import html
@@ -22,7 +22,7 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL, search
 
-EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
+EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "grade.html"
 GRADES = ["correct", "partial", "wrong", "hallucinated"]
 

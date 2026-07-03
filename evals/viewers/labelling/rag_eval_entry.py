@@ -2,7 +2,7 @@ import json
 
 from fasthtml.common import *
 
-# Axial failure categories from evals/answer_system/failure-taxonomy.md.
+# Axial failure categories from evals/answer/analysis/failure-taxonomy.md.
 # Each is one binary judge; severity drives prioritization (A and D are the
 # safety-critical pair — fail them hard even when the rest of the answer is great).
 TAXONOMY = {

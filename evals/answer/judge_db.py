@@ -11,7 +11,7 @@ calls. Opus 4.8 list price is $5 / $25 per 1M input/output tokens (platform.clau
 
 Schema lives in db/migrations/ (eval_runs, eval_results).
 
-Run: uv run python -m evals.answer_system.judge_db [n]
+Run: uv run python -m evals.answer.judge_db [n]
 """
 
 import os
@@ -25,7 +25,7 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from evals.answer_system.judge import (
+from evals.answer.judge import (
     EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, rag_answer,
 )
 from rag import DB_URL, GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K

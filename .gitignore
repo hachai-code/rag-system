@@ -19,7 +19,7 @@ evals/**/*.html
 evals/**/rag_system_human_eval*.txt
 
 # Pulled RAG traces for open coding (regenerate with: trace_viewer.py pull)
-evals/traces.jsonl
+evals/**/traces.jsonl
 
 # Obsidian vault config
 .obsidian/
@@ -32,7 +32,7 @@ evals/traces.jsonl
 .serena/
 
 # Pulled Langfuse traces for open coding (re-pull with: langfuse_viewer.py pull)
-evals/langfuse_traces.jsonl
+evals/**/langfuse_traces.jsonl
 
 # Riptide artifacts (cloud-synced)
 .humanlayer/tasks/
