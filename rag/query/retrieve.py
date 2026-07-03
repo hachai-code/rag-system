@@ -14,6 +14,7 @@ from ..config import CONFIG
 VOYAGE_MODEL = CONFIG.voyage_model
 EMBED_DIM = 1024
 TOP_K = CONFIG.top_k
+METHOD = CONFIG.method  # production default retriever (vector | hybrid | rerank)
 
 # Distance beyond which the corpus is treated as not covering the question (README).
 RELEVANCE_THRESHOLD = CONFIG.relevance_threshold
@@ -122,7 +123,7 @@ def rerank_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
 RETRIEVERS = {"vector": search, "hybrid": hybrid_search, "rerank": rerank_search}
 
 
-def get_retriever(method: str = "rerank"):
+def get_retriever(method: str = METHOD):
     """Map a retrieval.method config string to its retriever function."""
     return RETRIEVERS[method]
 

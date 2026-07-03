@@ -14,6 +14,7 @@ class Config:
     chunk_size: int
     chunk_overlap: int
     voyage_model: str
+    method: str
     top_k: int
     relevance_threshold: float
     fuse_depth: int

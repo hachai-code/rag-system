@@ -20,6 +20,7 @@ from slowapi.util import get_remote_address
 from .db import connect
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
 from .query.retrieve import (
+    METHOD,
     RELEVANCE_THRESHOLD,
     RERANK_DEPTH,
     TOP_K,
@@ -68,8 +69,8 @@ class AskRequest(BaseModel):
     format: Literal["prose", "claims"] = ANSWER_FORMAT
     # Generation model picker; resolved to an OpenRouter id via GEN_MODELS.
     model: Literal["pro", "flash"] = "pro"
-    # Retriever funnel depth; production default is the full hybrid + RRF + rerank stack.
-    method: Literal["vector", "hybrid", "rerank"] = "rerank"
+    # Retriever funnel; default from config.toml ([retrieval] method), production is rerank.
+    method: Literal["vector", "hybrid", "rerank"] = METHOD
     # Chunks handed to the generator (the citable pool). Defaults to config top_k;
     # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
     top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K

@@ -11,6 +11,7 @@ chunk_overlap = 50    # tokens carried from the end of one chunk into the next
 voyage_model = "voyage-4"
 
 [retrieval]
+method = "rerank"           # retriever funnel: vector | hybrid | rerank (the full stack)
 top_k = 25                  # chunks handed to the generator — the main "how much context" lever
 relevance_threshold = 0.7   # cosine distance above which the corpus is treated as "no answer"
 fuse_depth = 120            # candidates pulled per retriever before RRF
