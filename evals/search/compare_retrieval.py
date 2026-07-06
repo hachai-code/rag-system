@@ -8,7 +8,7 @@ can't rank the queries here: the eval's gold sets are broad, so vector hits rank
 reason.) For the N least-confident graded questions we show where vector and
 keyword each rank the gold chunk, to see which queries lexical search rescues.
 
-Run: uv run python -m evals.compare_retrieval
+Run: uv run python -m evals.search.compare_retrieval
 """
 
 import json
@@ -20,11 +20,11 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL, keyword_search, search
 
-from evals.metrics import gold_ids
+from evals.search.metrics import gold_ids
 
 K = 10        # retrieve this deep so a poor rank is still visible (eval scores @5)
 N_HARD = 10   # how many least-confident-for-vector queries to inspect
-EVAL_FILE = Path(__file__).parent / "eval_set.jsonl"
+EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 
 
 def gold_rank(hits: list[dict], gold: set[int]) -> int | None:

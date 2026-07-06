@@ -14,8 +14,8 @@ lets you spot the *first upstream failure* (bad retrieval vs. good chunks genera
 badly). eval_results doesn't store chunks, which is why we pull live rather than read
 the table.
 
-    uv run python -m evals.trace_viewer pull   # build traces.jsonl from the eval set
-    uv run python -m evals.trace_viewer        # serve the viewer (default), port 5003
+    uv run python -m evals.viewers.trace_viewer pull   # build traces.jsonl from the eval set
+    uv run python -m evals.viewers.trace_viewer        # serve the viewer (default), port 5003
 """
 
 import json
@@ -29,11 +29,11 @@ from fastapi.responses import HTMLResponse
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-from evals.answer_system.judge import NO_ANSWER
+from evals.answer.judge import NO_ANSWER
 from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
 
 HERE = Path(__file__).parent
-QUESTIONS = HERE / "answer_system" / "rag_system_human_eval.jsonl"
+QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"
 TRACES = HERE / "traces.jsonl"
 
 
@@ -207,7 +207,7 @@ fetch("/api/traces").then(r => r.json()).then(({ source, traces, can_pull }) => 
   tools.append(h("span", { class: "muted" }, `${source} · ${coded} / ${traces.length} coded · autosaves as you type`));
   app.append(h("h1", {}, "Trace viewer — open coding"), tools);
   if (!traces.length)
-    app.append(h("p", { class: "muted" }, "No traces yet — run: uv run python -m evals.trace_viewer pull"));
+    app.append(h("p", { class: "muted" }, "No traces yet — run: uv run python -m evals.viewers.trace_viewer pull"));
   traces.forEach(t => app.append(card(t)));
 });
 </script>

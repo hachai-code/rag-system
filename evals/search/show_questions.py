@@ -4,7 +4,7 @@ The raw JSONL is hard to skim because each row is one long line with the full
 chunk text in `ideal_answer`. This lays each row out as question + source + a
 trimmed preview of the ideal answer.
 
-Run: uv run evals/search_system/show_questions.py [path]
+Run: uv run evals/search/show_questions.py [path]
 """
 
 import json
@@ -12,7 +12,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-DEFAULT = Path(__file__).parent / "synthetic_questions.jsonl"
+DEFAULT = Path(__file__).parent / "data" / "synthetic_questions.jsonl"
 
 
 def main() -> None:

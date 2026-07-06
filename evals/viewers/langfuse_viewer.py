@@ -12,8 +12,8 @@ Verified against the installed Langfuse SDK (4.9.0): the read API is
 `.input`, `.output`, `.metadata`. No LLM calls here — pulling is just a Langfuse read
 plus a chunk-content lookup, so it's cheap and safe to re-run.
 
-    uv run python -m evals.langfuse_viewer pull   # cache real traces -> langfuse_traces.jsonl
-    uv run python -m evals.langfuse_viewer        # serve the viewer (default), port 5004
+    uv run python -m evals.viewers.langfuse_viewer pull   # cache real traces -> langfuse_traces.jsonl
+    uv run python -m evals.viewers.langfuse_viewer        # serve the viewer (default), port 5004
 """
 
 import json
@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse
 from langfuse import get_client
 from psycopg.rows import dict_row
 
-from evals.trace_viewer import HTML, load  # same open-coding UI, different data source
+from evals.viewers.trace_viewer import HTML, load  # same open-coding UI, different data source
 from rag import DB_URL
 
 load_dotenv()

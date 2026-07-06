@@ -9,14 +9,14 @@ judge grades the RAG's answers *today*. Where the system now behaves differently
 (e.g. the doc-extraction attack now refuses instead of hallucinating), a mismatch is
 the system changing, not the judge erring. Treat kappa as a noisy floor, n is tiny.
 
-Run: uv run python -m evals.answer_system.judge_vs_human
+Run: uv run python -m evals.answer.judge_vs_human
 """
 
 import json
 from pathlib import Path
 
-JUDGMENTS = Path(__file__).parent / "judgments.jsonl"
-METRICS = Path(__file__).parent / "judge_metrics.json"
+JUDGMENTS = Path(__file__).parent / "data" / "judgments.jsonl"
+METRICS = Path(__file__).parent / "analysis" / "judge_metrics.json"
 
 # (eval_id, dimension, human_pass, source note from the .txt)
 HUMAN = [

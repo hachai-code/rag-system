@@ -26,8 +26,8 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-from evals.answer_system.judge import eval_items
-from evals.answer_system.judge_db import judge_client
+from evals.answer.judge import eval_items
+from evals.answer.judge_db import judge_client
 from evals.run import evaluate, load_config
 from rag import ANSWER_FORMAT, DB_URL
 

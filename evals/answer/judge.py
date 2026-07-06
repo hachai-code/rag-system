@@ -15,7 +15,7 @@ tool-calling to fill the model), so a verdict either parses into `Verdict` or re
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
 
-Run: uv run python -m evals.answer_system.judge [n]
+Run: uv run python -m evals.answer.judge [n]
 """
 
 import json
@@ -30,8 +30,8 @@ from pydantic import BaseModel, Field
 
 from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
 
-EVAL_FILE = Path(__file__).parent / "rag_system_human_eval.jsonl"
-OUT_FILE = Path(__file__).parent / "judgments.jsonl"
+EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
+OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
 JUDGE_MODEL = "claude-opus-4-8"  # Opus-class: a weak judge is worse than no judge
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
 # Sentinel for a hard model refusal (stop_reason="refusal"): the API returns no text,

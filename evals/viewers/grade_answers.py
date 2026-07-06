@@ -7,14 +7,14 @@ them back into the rows' `grade` field so you end up with the graded document.
 
 Reads answer_feedback.jsonl; open grade_answers.html in a browser afterwards.
 
-Run: uv run evals/answer_system/grade_answers.py
+Run: uv run evals/viewers/grade_answers.py
 """
 
 import html
 import json
 from pathlib import Path
 
-IN_FILE = Path(__file__).parent / "answer_feedback.jsonl"
+IN_FILE = Path(__file__).parent.parent / "answer" / "data" / "answer_feedback.jsonl"
 OUT_FILE = Path(__file__).parent / "grade_answers.html"
 
 CSS = """

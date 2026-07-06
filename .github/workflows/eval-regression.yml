@@ -8,9 +8,8 @@ on:
   pull_request:
     paths:
       - 'evals/configs/**'        # retrieval config versions
-      - 'evals/prompts/**'        # prompt variants
       - 'rag/**'                  # production system prompt + retrieval/generation logic
-      - 'evals/answer_system/judge.py'  # judge rubrics
+      - 'evals/answer/judge.py'  # judge rubrics
 
 jobs:
   regression:

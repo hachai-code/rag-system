@@ -11,7 +11,7 @@ model + prompt, judge model). Everything that shapes a run is fingerprinted into
 content hash stored on the run, so a run is reproducible from its config + git SHA:
 change a knob or the prompt and the hash changes; leave them and it doesn't.
 
-Reuses the judge from answer_system/ (rubrics, per-dimension Opus calls, token-priced
+Reuses the judge from answer/ (rubrics, per-dimension Opus calls, token-priced
 cost). A new config is a new file — no code edits — which is the point.
 """
 
@@ -27,8 +27,8 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from evals.answer_system.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
-from evals.answer_system.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
+from evals.answer.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
+from evals.answer.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
 from rag import ANSWER_FORMAT, DB_URL, SYSTEM_PROMPT, answer, retrieve, search
 
 

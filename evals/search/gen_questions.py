@@ -15,7 +15,7 @@ Whether a chunk actually answers its question (grounding) is left to human revie
 these are drafts to grade, not vetted ground truth. Output goes to
 synthetic_questions.jsonl; merge the good ones into eval_set.jsonl after grading.
 
-Run: uv run python -m evals.search_system.gen_questions [n]
+Run: uv run python -m evals.search.gen_questions [n]
 """
 
 import json
@@ -28,7 +28,7 @@ from psycopg.rows import dict_row
 
 from rag import DB_URL
 
-OUT_FILE = Path(__file__).parent / "synthetic_questions.jsonl"
+OUT_FILE = Path(__file__).parent / "data" / "synthetic_questions.jsonl"
 N_QUESTIONS = 50
 PER_DOC = 10  # candidate cap per document; the pool is drawn larger than N to absorb skips
 MIN_CHARS = 300  # skip thin chunks (headings, stray lines) that can't anchor a question
