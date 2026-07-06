@@ -5,11 +5,13 @@ OpenRouter seam as complete() in answer.py."""
 
 import json
 import os
+import time
 
 import httpx
 import tiktoken
 import trafilatura
-from openai import OpenAI
+from langfuse import get_client
+from langfuse.openai import OpenAI
 from pydantic import BaseModel
 
 from ..config import CONFIG
@@ -18,7 +20,9 @@ MODEL = CONFIG.gen_model
 MAX_TOKENS = CONFIG.max_tokens
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
-MAX_ITERATIONS = 8
+MAX_ITERATIONS = 10
+MAX_COST_USD = 0.50
+MAX_SECONDS = 60
 MAX_PAGE_TOKENS = 4000
 
 _encoder = tiktoken.get_encoding("o200k_base")
@@ -103,36 +107,79 @@ def fetch_page(url: str) -> str:
     return text
 
 
+def _best_effort_answer(client, messages: list, limit: str) -> str:
+    """One bounded no-tools call: answer from the research gathered so far."""
+    stop_msg = {
+        "role": "user",
+        "content": "Stop researching. Do not call any tools. Answer the original "
+                   "question in plain prose, based only on what you have found so far.",
+    }
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, tool_choice="none",
+            messages=messages + [stop_msg],
+        )
+        answer = resp.choices[0].message.content or ""
+    except Exception:
+        answer = "Could not produce an answer."
+    return f"{answer}\n\n[Note: stopped early — {limit} limit reached]"
+
+
 def run_agent(question: str) -> str:
-    """Answer the question by letting the model drive research: it decides when to
-    search and when it has enough to answer."""
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    """Answer the question by letting the model drive research, within hard limits:
+    MAX_ITERATIONS LLM calls, MAX_COST_USD spend, MAX_SECONDS wall time. On a limit
+    the agent answers from what it has gathered so far instead of raising."""
+    client = OpenAI(
+        base_url=OPENROUTER_BASE_URL,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        timeout=MAX_SECONDS,
+    )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
+    start = time.monotonic()
+    cost = 0.0
     iterations = 0
-    while iterations < MAX_ITERATIONS:
-        iterations += 1
-        msg = client.chat.completions.create(
-            model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=messages
-        ).choices[0].message
-        messages.append(msg)
-        if not msg.tool_calls:
-            return msg.content
-        for call in msg.tool_calls:
-            args = json.loads(call.function.arguments)
-            print(f"-> {call.function.name}({args})")
-            try:
-                if call.function.name == "search_web":
-                    results = search_web(args["query"])
-                    text = "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
-                else:
-                    text = fetch_page(args["url"])
-            except httpx.HTTPError as e:
-                text = f"Tool error: {e}"
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
-    return "Reached max iterations without a final answer."
+    with get_client().start_as_current_observation(
+        as_type="span", name="web-search-agent", input=question
+    ) as span:
+        while True:
+            limit = ("iterations" if iterations >= MAX_ITERATIONS
+                     else "cost" if cost >= MAX_COST_USD
+                     else "time" if time.monotonic() - start >= MAX_SECONDS
+                     else None)
+            if limit:
+                answer = _best_effort_answer(client, messages, limit)
+                break
+            iterations += 1
+            resp = client.chat.completions.create(
+                model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=messages
+            )
+            cost += getattr(resp.usage, "cost", None) or 0.0
+            msg = resp.choices[0].message
+            messages.append(msg)
+            if not msg.tool_calls:
+                answer = msg.content
+                break
+            for call in msg.tool_calls:
+                args = json.loads(call.function.arguments)
+                print(f"-> {call.function.name}({args})  "
+                      f"[iter {iterations}, ${cost:.4f}, {time.monotonic() - start:.1f}s]")
+                try:
+                    if call.function.name == "search_web":
+                        results = search_web(args["query"])
+                        text = "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+                    else:
+                        text = fetch_page(args["url"])
+                except httpx.HTTPError as e:
+                    text = f"Tool error: {e}"
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+        span.update(
+            output=answer,
+            metadata={"iterations": iterations, "cost_usd": round(cost, 4), "limit_hit": limit},
+        )
+    return answer
 
 
 if __name__ == "__main__":
@@ -144,3 +191,4 @@ if __name__ == "__main__":
     )
     print(f"Q: {question}\n")
     print(run_agent(question))
+    get_client().flush()
