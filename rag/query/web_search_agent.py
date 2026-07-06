@@ -1,11 +1,14 @@
-"""The naked agent loop: a while loop in which the model either calls the one tool
-(web search via Tavily) or returns a final answer; we execute the tool, append the
-result, and repeat. No framework, same OpenRouter seam as complete() in answer.py."""
+"""The naked agent loop: a while loop in which the model either calls a tool
+(web search via Tavily, page fetch via trafilatura) or returns a final answer;
+we execute the tool, append the result, and repeat. No framework, same
+OpenRouter seam as complete() in answer.py."""
 
 import json
 import os
 
 import httpx
+import tiktoken
+import trafilatura
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -15,13 +18,17 @@ MODEL = CONFIG.gen_model
 MAX_TOKENS = CONFIG.max_tokens
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
-MAX_ITERATIONS = 5
+MAX_ITERATIONS = 8
+MAX_PAGE_TOKENS = 4000
+
+_encoder = tiktoken.get_encoding("o200k_base")
 
 SYSTEM_PROMPT = (
-    "You answer questions using web search. Use search_web to find current, relevant "
-    "material before answering; search again with a different query if the results "
-    "don't cover the question. Ground your answer in what the results say and "
-    "mention the sources."
+    "You answer questions by researching the web. Break multi-part questions into "
+    "sub-questions and research them one at a time: use search_web to find candidate "
+    "sources, fetch_page to read the most promising results in full, and search again "
+    "with refined queries until every part is answered. Ground your answer in what "
+    "the pages say and mention the sources."
 )
 
 TOOLS = [
@@ -38,7 +45,22 @@ TOOLS = [
                 "required": ["query"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_page",
+            "description": "Fetch a web page and return its main text. "
+                           "Use on promising search results to read them in full.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The page URL."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -63,6 +85,24 @@ def search_web(query: str, k: int = 5) -> list[SearchResult]:
     ]
 
 
+def fetch_page(url: str) -> str:
+    """Return the main text of the page, truncated to MAX_PAGE_TOKENS."""
+    resp = httpx.get(
+        url,
+        follow_redirects=True,
+        timeout=30,
+        headers={"User-Agent": "Mozilla/5.0 (research agent)"},
+    )
+    resp.raise_for_status()
+    text = trafilatura.extract(resp.text, url=url)
+    if text is None:
+        return f"No extractable text at {url}."
+    tokens = _encoder.encode(text)
+    if len(tokens) > MAX_PAGE_TOKENS:
+        text = _encoder.decode(tokens[:MAX_PAGE_TOKENS]) + "\n[truncated]"
+    return text
+
+
 def run_agent(question: str) -> str:
     """Answer the question by letting the model drive research: it decides when to
     search and when it has enough to answer."""
@@ -81,10 +121,16 @@ def run_agent(question: str) -> str:
         if not msg.tool_calls:
             return msg.content
         for call in msg.tool_calls:
-            query = json.loads(call.function.arguments)["query"]
-            print(f"-> search_web({query!r})")
-            results = search_web(query)
-            text = "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+            args = json.loads(call.function.arguments)
+            print(f"-> {call.function.name}({args})")
+            try:
+                if call.function.name == "search_web":
+                    results = search_web(args["query"])
+                    text = "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+                else:
+                    text = fetch_page(args["url"])
+            except httpx.HTTPError as e:
+                text = f"Tool error: {e}"
             messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
     return "Reached max iterations without a final answer."
 
@@ -92,6 +138,9 @@ def run_agent(question: str) -> str:
 if __name__ == "__main__":
     import sys
 
-    question = sys.argv[1] if len(sys.argv) > 1 else "What is the latest stable Python release?"
+    question = sys.argv[1] if len(sys.argv) > 1 else (
+        "Which was released more recently, the latest stable Python or the latest "
+        "Node.js LTS, and what is one headline feature of each?"
+    )
     print(f"Q: {question}\n")
     print(run_agent(question))
