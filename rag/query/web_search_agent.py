@@ -29,11 +29,10 @@ MAX_CITATION_RETRIES = 2
 
 _encoder = tiktoken.get_encoding("o200k_base")
 
-# ponytail: clips URLs containing ")" (some Wikipedia pages); fine for this agent
-_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+_URL_RE = re.compile(r"https?://[^\s<>\"'()\]]*(?:\([^\s()]*\)[^\s<>\"'()\]]*)*")
 
 
-_MD_LINK_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
+_MD_LINK_RE = re.compile(r"\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
 
 
 def _urls_in(text: str) -> set[str]:
