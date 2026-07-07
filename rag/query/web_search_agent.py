@@ -19,6 +19,7 @@ import json
 import os
 import re
 import time
+from datetime import date
 
 import httpx
 import tiktoken
@@ -42,11 +43,14 @@ MAX_SECONDS = 60
 MAX_PAGE_TOKENS = 4000
 MAX_CITATION_RETRIES = 2
 
+DISTILL_MODEL = CONFIG.gen_models["flash"]
+DISTILL_OVER_TOKENS = 1500  # pages shorter than this enter the transcript raw
+
 _encoder = tiktoken.get_encoding("o200k_base")
 
 # --- Prompts -------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a research agent. You answer questions by searching the web and reading pages — never from memory alone.
+SYSTEM_PROMPT = """Today is {today}. You are a research agent. You answer questions by searching the web and reading pages — never from memory alone.
 
 Method:
 1. Break the question into sub-questions and work through them one at a time.
@@ -72,11 +76,13 @@ TOOLS = [
             "description": (
                 "Search the web via Tavily. Returns the top 5 results as title, URL, "
                 "and a short snippet. Snippets are 1-3 sentences of page text — enough "
-                "to judge relevance, not enough to answer from. Use short, specific "
-                'keyword queries ("python 3.13 release date") rather than full '
-                "sentences. If results are off-target, search again with different "
-                'terms. Returns "No results found" for queries that match nothing — '
-                "rephrase and retry."
+                "to judge relevance, not enough to answer from. Queries: 2-6 plain "
+                'keywords ("python 3.13 release date"), not full sentences. The '
+                "engine ignores operators like site: — don't use them. At most one "
+                "quoted phrase per query. Add a year only when the question is about "
+                "a specific year. If results are off-target, search again with "
+                'different terms. Returns "No results found" for queries that match '
+                "nothing — rephrase and retry."
             ),
             "parameters": {
                 "type": "object",
@@ -97,12 +103,14 @@ TOOLS = [
         "function": {
             "name": "fetch_page",
             "description": (
-                "Fetch a URL and return the page's main text with navigation, ads, "
-                "and boilerplate stripped. Long pages are cut at ~4000 tokens and end "
-                'with "[truncated]". Use this on the 1-2 most promising search results '
-                "per search — reading the full page is the only way to verify a "
-                "snippet. Fails as text on dead links, paywalls (401/403), and pages "
-                "with no extractable text; when that happens, pick a different source."
+                "Fetch a URL and return its content with navigation, ads, and "
+                "boilerplate stripped. Short pages come back as full text; long pages "
+                "are distilled to the facts relevant to the research question, with "
+                "key wording quoted verbatim. Use this on the 1-2 most promising "
+                "search results per search — reading the page is the only way to "
+                "verify a snippet. Fails as text on dead links, paywalls (401/403), "
+                "and pages with no extractable text; when that happens, pick a "
+                "different source."
             ),
             "parameters": {
                 "type": "object",
@@ -174,6 +182,32 @@ def _execute_tool(name: str, arguments: str) -> str:
         return f"Tool error: unknown tool {name!r}."
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
+
+
+def _distill(client: OpenAI, question: str, page: str) -> tuple[str, float]:
+    """Compress a fetched page to the parts relevant to the question, via the
+    cheap flash model. Returns (text, cost). On any failure returns the raw page —
+    distillation is an optimization, never a point of failure."""
+    prompt = (
+        "You are compressing a fetched web page for a research agent.\n"
+        f"Research question: {question}\n\n"
+        "From the page text below, extract only content relevant to the question: "
+        "facts, dates, numbers, names — quoting key wording verbatim where it "
+        "matters. Max 300 words, no preamble. If nothing on the page is relevant, "
+        "reply with one line saying what the page is about instead.\n\n"
+        f"{page}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=DISTILL_MODEL, max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if not text:
+            return page, 0.0
+        return text, getattr(resp.usage, "cost", None) or 0.0
+    except Exception:
+        return page, 0.0
 
 
 # --- State ---------------------------------------------------------------------
@@ -274,7 +308,7 @@ def run_agent(question: str) -> str:
     )
     state = AgentState(question=question)
     messages: list = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT.format(today=date.today().isoformat())},
         {"role": "user", "content": question},
     ]
     with get_client().start_as_current_observation(
@@ -319,6 +353,10 @@ def run_agent(question: str) -> str:
                     as_type="tool", name=call.function.name, input=call.function.arguments
                 ) as tool_obs:
                     result = _execute_tool(call.function.name, call.function.arguments)
+                    if (call.function.name == "fetch_page"
+                            and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS):
+                        result, distill_cost = _distill(client, state.question, result)
+                        state.cost_spent += distill_cost
                     tool_obs.update(output=result)
                 state.record(Step(tool=call.function.name,
                                   args=call.function.arguments, result=result))
