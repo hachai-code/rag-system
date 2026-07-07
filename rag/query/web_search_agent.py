@@ -5,6 +5,7 @@ OpenRouter seam as complete() in answer.py."""
 
 import json
 import os
+import re
 import time
 
 import httpx
@@ -24,8 +25,27 @@ MAX_ITERATIONS = 10
 MAX_COST_USD = 0.50
 MAX_SECONDS = 60
 MAX_PAGE_TOKENS = 4000
+MAX_CITATION_RETRIES = 2
 
 _encoder = tiktoken.get_encoding("o200k_base")
+
+# ponytail: clips URLs containing ")" (some Wikipedia pages); fine for this agent
+_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
+_MD_LINK_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
+
+
+def _urls_in(text: str) -> set[str]:
+    """All http(s) URLs in the text, normalized for comparison."""
+    return {u.rstrip(".,;:").rstrip("/") for u in _URL_RE.findall(text)}
+
+
+def _cited_urls(answer: str) -> set[str]:
+    """URLs cited as markdown links — the citation format the prompt requires.
+    Deliberately ignores bare URLs so placeholder URLs in code examples don't
+    trigger false rejections."""
+    return {u.rstrip(".,;:").rstrip("/") for u in _MD_LINK_RE.findall(answer)}
 
 SYSTEM_PROMPT = """You are a research agent. You answer questions by searching the web and reading pages — never from memory alone.
 
@@ -42,7 +62,7 @@ Tool failures (dead links, paywalls, empty results) come back as text. Treat the
 
 Answer requirements:
 - Answer every part of the question in plain prose.
-- Cite the URL of the page each claim comes from. Only cite pages you fetched or that appeared in search results.
+- Cite sources as markdown links [title](https://url) next to the claims they support. Only cite URLs from your search results or fetched pages — cited URLs are checked against your research trace and answers citing unseen URLs are rejected.
 - If something could not be verified, say so explicitly instead of guessing."""
 
 TOOLS = [
@@ -189,6 +209,8 @@ def run_agent(question: str) -> str:
     start = time.monotonic()
     cost = 0.0
     iterations = 0
+    citation_retries = 0
+    seen_urls: set[str] = set()
     with get_client().start_as_current_observation(
         as_type="span", name="web-search-agent", input=question
     ) as span:
@@ -208,16 +230,31 @@ def run_agent(question: str) -> str:
             msg = resp.choices[0].message
             messages.append(msg)
             if not msg.tool_calls:
+                unknown = _cited_urls(msg.content) - seen_urls
+                if unknown and citation_retries < MAX_CITATION_RETRIES:
+                    citation_retries += 1
+                    print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
+                    messages.append({
+                        "role": "user",
+                        "content": "Your answer cites URLs that never appeared in your "
+                                   f"research: {sorted(unknown)}. Every citation must be "
+                                   "a URL from your search results or fetched pages. "
+                                   "Rewrite the answer, removing or replacing those "
+                                   "citations.",
+                    })
+                    continue
                 answer = msg.content
                 break
             for call in msg.tool_calls:
                 print(f"-> {call.function.name}({call.function.arguments})  "
                       f"[iter {iterations}, ${cost:.4f}, {time.monotonic() - start:.1f}s]")
                 text = _execute_tool(call.function.name, call.function.arguments)
+                seen_urls |= _urls_in(call.function.arguments) | _urls_in(text)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
         span.update(
             output=answer,
-            metadata={"iterations": iterations, "cost_usd": round(cost, 4), "limit_hit": limit},
+            metadata={"iterations": iterations, "cost_usd": round(cost, 4),
+                      "limit_hit": limit, "citation_retries": citation_retries},
         )
     return answer
 
