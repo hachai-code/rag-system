@@ -1,7 +1,19 @@
-"""The naked agent loop: a while loop in which the model either calls a tool
-(web search via Tavily, page fetch via trafilatura) or returns a final answer;
-we execute the tool, append the result, and repeat. No framework, same
-OpenRouter seam as complete() in answer.py."""
+"""A web research agent as one readable file: a naked tool-call loop, no framework.
+
+The model drives its own research — search the web via Tavily, read pages via
+trafilatura — until it can answer, within hard budgets (iterations, dollars,
+seconds). Three design rules:
+
+- Tool failures never raise. Errors return to the model as text ("Tool error:
+  ...", "No results found ...") so it can route around them instead of dying.
+- Citations are mechanically verified. Every URL cited in the answer must have
+  appeared in the run's tool traffic; an answer citing an unseen URL is
+  rejected and the model rewrites it.
+- Every step is traced to Langfuse: LLM generations (automatic, via the OpenAI
+  wrapper), tool calls with inputs and outputs, and citation rejections.
+
+Uses the same OpenRouter seam as complete() in answer.py.
+"""
 
 import json
 import os
@@ -13,14 +25,17 @@ import tiktoken
 import trafilatura
 from langfuse import get_client
 from langfuse.openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import CONFIG
+
+# --- Config ------------------------------------------------------------------
 
 MODEL = CONFIG.gen_model
 MAX_TOKENS = CONFIG.max_tokens
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
 MAX_ITERATIONS = 10
 MAX_COST_USD = 0.50
 MAX_SECONDS = 60
@@ -29,22 +44,7 @@ MAX_CITATION_RETRIES = 2
 
 _encoder = tiktoken.get_encoding("o200k_base")
 
-_URL_RE = re.compile(r"https?://[^\s<>\"'()\]]*(?:\([^\s()]*\)[^\s<>\"'()\]]*)*")
-
-
-_MD_LINK_RE = re.compile(r"\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
-
-
-def _urls_in(text: str) -> set[str]:
-    """All http(s) URLs in the text, normalized for comparison."""
-    return {u.rstrip(".,;:").rstrip("/") for u in _URL_RE.findall(text)}
-
-
-def _cited_urls(answer: str) -> set[str]:
-    """URLs cited as markdown links — the citation format the prompt requires.
-    Deliberately ignores bare URLs so placeholder URLs in code examples don't
-    trigger false rejections."""
-    return {u.rstrip(".,;:").rstrip("/") for u in _MD_LINK_RE.findall(answer)}
+# --- Prompts -------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a research agent. You answer questions by searching the web and reading pages — never from memory alone.
 
@@ -118,6 +118,8 @@ TOOLS = [
     },
 ]
 
+# --- Tools ---------------------------------------------------------------------
+
 
 class SearchResult(BaseModel):
     title: str
@@ -174,7 +176,70 @@ def _execute_tool(name: str, arguments: str) -> str:
         return f"Tool error: {type(e).__name__}: {e}"
 
 
-def _best_effort_answer(client, messages: list, limit: str) -> str:
+# --- State ---------------------------------------------------------------------
+
+# ")" only counts as part of a URL inside a balanced "(...)" pair, so Wikipedia-
+# style URLs survive while markdown link closers and prose parens terminate.
+_URL_RE = re.compile(r"https?://[^\s<>\"'()\]]*(?:\([^\s()]*\)[^\s<>\"'()\]]*)*")
+_MD_LINK_RE = re.compile(r"\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
+
+
+def _urls_in(text: str) -> set[str]:
+    """All http(s) URLs in the text, normalized for comparison."""
+    return {u.rstrip(".,;:").rstrip("/") for u in _URL_RE.findall(text)}
+
+
+def _cited_urls(answer: str) -> set[str]:
+    """URLs cited as markdown links — the citation format the prompt requires.
+    Deliberately ignores bare URLs so placeholder URLs in code examples don't
+    trigger false rejections."""
+    return {u.rstrip(".,;:").rstrip("/") for u in _MD_LINK_RE.findall(answer)}
+
+
+class Step(BaseModel):
+    """One executed tool call, as the model requested it."""
+
+    tool: str
+    args: str  # raw JSON string from the model
+    result: str
+
+
+class AgentState(BaseModel):
+    """Everything a run knows about itself; run_agent reads and writes this
+    instead of loose locals."""
+
+    question: str
+    steps: list[Step] = []
+    sources: set[str] = set()  # every URL seen in tool traffic
+    iterations: int = 0
+    cost_spent: float = 0.0
+    citation_retries: int = 0
+    started: float = Field(default_factory=time.monotonic)
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def limit_hit(self) -> str | None:
+        """Name of the first exhausted budget, or None while within all three."""
+        if self.iterations >= MAX_ITERATIONS:
+            return "iterations"
+        if self.cost_spent >= MAX_COST_USD:
+            return "cost"
+        if self.elapsed >= MAX_SECONDS:
+            return "time"
+        return None
+
+    def record(self, step: Step) -> None:
+        """Append the step and absorb its URLs into the run's known sources."""
+        self.steps.append(step)
+        self.sources |= _urls_in(step.args) | _urls_in(step.result)
+
+
+# --- Loop ----------------------------------------------------------------------
+
+
+def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
     """One bounded no-tools call: answer from the research gathered so far."""
     stop_msg = {
         "role": "user",
@@ -189,6 +254,8 @@ def _best_effort_answer(client, messages: list, limit: str) -> str:
             )
         except Exception:
             break
+        # DeepSeek sometimes leaks raw "<｜DSML｜tool_calls>" markup as text when
+        # told to stop mid-research; everything from the special token on is garbage
         answer = (resp.choices[0].message.content or "").split("<｜")[0].strip()
         if answer:
             break
@@ -205,37 +272,32 @@ def run_agent(question: str) -> str:
         api_key=os.environ["OPENROUTER_API_KEY"],
         timeout=MAX_SECONDS,
     )
-    messages = [
+    state = AgentState(question=question)
+    messages: list = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
-    start = time.monotonic()
-    cost = 0.0
-    iterations = 0
-    citation_retries = 0
-    seen_urls: set[str] = set()
     with get_client().start_as_current_observation(
         as_type="span", name="web-search-agent", input=question
     ) as span:
         while True:
-            limit = ("iterations" if iterations >= MAX_ITERATIONS
-                     else "cost" if cost >= MAX_COST_USD
-                     else "time" if time.monotonic() - start >= MAX_SECONDS
-                     else None)
+            limit = state.limit_hit()
             if limit:
                 answer = _best_effort_answer(client, messages, limit)
                 break
-            iterations += 1
+
+            state.iterations += 1
             resp = client.chat.completions.create(
                 model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=messages
             )
-            cost += getattr(resp.usage, "cost", None) or 0.0
+            state.cost_spent += getattr(resp.usage, "cost", None) or 0.0
             msg = resp.choices[0].message
             messages.append(msg)
+
             if not msg.tool_calls:
-                unknown = _cited_urls(msg.content) - seen_urls
-                if unknown and citation_retries < MAX_CITATION_RETRIES:
-                    citation_retries += 1
+                unknown = _cited_urls(msg.content) - state.sources
+                if unknown and state.citation_retries < MAX_CITATION_RETRIES:
+                    state.citation_retries += 1
                     print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
                     get_client().create_event(name="citation-rejected", input=sorted(unknown))
                     messages.append({
@@ -249,20 +311,25 @@ def run_agent(question: str) -> str:
                     continue
                 answer = msg.content
                 break
+
             for call in msg.tool_calls:
                 print(f"-> {call.function.name}({call.function.arguments})  "
-                      f"[iter {iterations}, ${cost:.4f}, {time.monotonic() - start:.1f}s]")
+                      f"[iter {state.iterations}, ${state.cost_spent:.4f}, {state.elapsed:.1f}s]")
                 with get_client().start_as_current_observation(
                     as_type="tool", name=call.function.name, input=call.function.arguments
                 ) as tool_obs:
-                    text = _execute_tool(call.function.name, call.function.arguments)
-                    tool_obs.update(output=text)
-                seen_urls |= _urls_in(call.function.arguments) | _urls_in(text)
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+                    result = _execute_tool(call.function.name, call.function.arguments)
+                    tool_obs.update(output=result)
+                state.record(Step(tool=call.function.name,
+                                  args=call.function.arguments, result=result))
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
         span.update(
             output=answer,
-            metadata={"iterations": iterations, "cost_usd": round(cost, 4),
-                      "limit_hit": limit, "citation_retries": citation_retries},
+            metadata={"iterations": state.iterations,
+                      "cost_usd": round(state.cost_spent, 4),
+                      "limit_hit": limit,
+                      "citation_retries": state.citation_retries},
         )
     return answer
 
