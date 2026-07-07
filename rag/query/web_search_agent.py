@@ -107,6 +107,22 @@ def fetch_page(url: str) -> str:
     return text
 
 
+def _execute_tool(name: str, arguments: str) -> str:
+    """Run one tool call; any failure comes back as text so the model can react."""
+    try:
+        args = json.loads(arguments)
+        if name == "search_web":
+            results = search_web(args["query"])
+            if not results:
+                return f"No results found for {args['query']!r}. Try a different query."
+            return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+        if name == "fetch_page":
+            return fetch_page(args["url"])
+        return f"Tool error: unknown tool {name!r}."
+    except Exception as e:
+        return f"Tool error: {type(e).__name__}: {e}"
+
+
 def _best_effort_answer(client, messages: list, limit: str) -> str:
     """One bounded no-tools call: answer from the research gathered so far."""
     stop_msg = {
@@ -163,17 +179,9 @@ def run_agent(question: str) -> str:
                 answer = msg.content
                 break
             for call in msg.tool_calls:
-                args = json.loads(call.function.arguments)
-                print(f"-> {call.function.name}({args})  "
+                print(f"-> {call.function.name}({call.function.arguments})  "
                       f"[iter {iterations}, ${cost:.4f}, {time.monotonic() - start:.1f}s]")
-                try:
-                    if call.function.name == "search_web":
-                        results = search_web(args["query"])
-                        text = "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
-                    else:
-                        text = fetch_page(args["url"])
-                except httpx.HTTPError as e:
-                    text = f"Tool error: {e}"
+                text = _execute_tool(call.function.name, call.function.arguments)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
         span.update(
             output=answer,
