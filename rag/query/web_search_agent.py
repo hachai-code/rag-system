@@ -52,7 +52,7 @@ Method:
 1. Break the question into sub-questions and work through them one at a time.
 2. For each sub-question, start with one broad search to survey what's out there.
 3. Fetch the 1-2 most promising results and read them in full. Snippets are teasers, not sources — never answer from snippets alone.
-4. Verify load-bearing facts (dates, versions, numbers, "latest"/"most" claims) against a second independent source before stating them.
+4. Verify load-bearing facts (dates, versions, numbers, "latest"/"most" claims) against a second independent source before stating them. Once two sources agree, the fact is verified — never search for it again.
 5. Refine and search again when results are off-target; a shorter, more specific query usually beats a longer one.
 
 Stop when every part of the question is grounded in a page you actually fetched, or when further searching stops turning up anything new. Do not keep researching a sub-question you have already verified.
@@ -181,15 +181,19 @@ def _best_effort_answer(client, messages: list, limit: str) -> str:
         "content": "Stop researching. Do not call any tools. Answer the original "
                    "question in plain prose, based only on what you have found so far.",
     }
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, tool_choice="none",
-            messages=messages + [stop_msg],
-        )
-        answer = resp.choices[0].message.content or ""
-    except Exception:
-        answer = "Could not produce an answer."
-    return f"{answer}\n\n[Note: stopped early — {limit} limit reached]"
+    answer = ""
+    for _ in range(2):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL, max_tokens=MAX_TOKENS, messages=messages + [stop_msg],
+            )
+        except Exception:
+            break
+        answer = (resp.choices[0].message.content or "").split("<｜")[0].strip()
+        if answer:
+            break
+    return (f"{answer or 'Could not produce an answer.'}"
+            f"\n\n[Note: stopped early — {limit} limit reached]")
 
 
 def run_agent(question: str) -> str:
@@ -233,6 +237,7 @@ def run_agent(question: str) -> str:
                 if unknown and citation_retries < MAX_CITATION_RETRIES:
                     citation_retries += 1
                     print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
+                    get_client().create_event(name="citation-rejected", input=sorted(unknown))
                     messages.append({
                         "role": "user",
                         "content": "Your answer cites URLs that never appeared in your "
@@ -247,7 +252,11 @@ def run_agent(question: str) -> str:
             for call in msg.tool_calls:
                 print(f"-> {call.function.name}({call.function.arguments})  "
                       f"[iter {iterations}, ${cost:.4f}, {time.monotonic() - start:.1f}s]")
-                text = _execute_tool(call.function.name, call.function.arguments)
+                with get_client().start_as_current_observation(
+                    as_type="tool", name=call.function.name, input=call.function.arguments
+                ) as tool_obs:
+                    text = _execute_tool(call.function.name, call.function.arguments)
+                    tool_obs.update(output=text)
                 seen_urls |= _urls_in(call.function.arguments) | _urls_in(text)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
         span.update(
