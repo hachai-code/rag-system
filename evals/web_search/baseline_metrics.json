@@ -1,0 +1,37 @@
+{
+  "date": "2026-07-08T09:47:13+00:00",
+  "agent_model": "deepseek/deepseek-v4-flash",
+  "judge_model": "deepseek/deepseek-v4-flash",
+  "n": 20,
+  "overall": {
+    "correct": 12,
+    "wrong": 2,
+    "partial": 6
+  },
+  "fact_recall": "46/60",
+  "per_category": {
+    "multi_hop": {
+      "correct": 3,
+      "wrong": 1,
+      "partial": 1
+    },
+    "post_cutoff": {
+      "correct": 2,
+      "partial": 3
+    },
+    "sources_disagree": {
+      "correct": 3,
+      "partial": 2
+    },
+    "synthesis": {
+      "correct": 4,
+      "wrong": 1
+    }
+  },
+  "failure_categories": {
+    "synthesis_error": 7,
+    "premature_stop": 4,
+    "bad_search_queries": 3
+  },
+  "emerging_categories": {}
+}
