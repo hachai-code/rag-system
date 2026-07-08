@@ -39,7 +39,7 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 MAX_ITERATIONS = 10
 MAX_COST_USD = 0.50
-MAX_SECONDS = 60
+MAX_SECONDS = 90
 MAX_PAGE_TOKENS = 4000
 MAX_CITATION_RETRIES = 2
 
@@ -66,6 +66,7 @@ Tool failures (dead links, paywalls, empty results) come back as text. Treat the
 Answer requirements:
 - Answer every part of the question in plain prose.
 - Cite sources as markdown links [title](https://url) next to the claims they support. Only cite URLs from your search results or fetched pages — cited URLs are checked against your research trace and answers citing unseen URLs are rejected.
+- Include every concrete detail you encountered that bears on the question — dates, numbers, names, titles, records, "firsts" — even secondary ones. A research answer errs on the side of completeness, not brevity.
 - If something could not be verified, say so explicitly instead of guessing."""
 
 TOOLS = [
@@ -281,7 +282,7 @@ def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
                    "question in plain prose, based only on what you have found so far.",
     }
     answer = ""
-    for _ in range(2):
+    for _ in range(3):
         try:
             resp = client.chat.completions.create(
                 model=MODEL, max_tokens=MAX_TOKENS, messages=messages + [stop_msg],
@@ -293,6 +294,15 @@ def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
         answer = (resp.choices[0].message.content or "").split("<｜")[0].strip()
         if answer:
             break
+    if not answer:
+        # salvage: the model's last substantive narration beats a shrug
+        for m in reversed(messages):
+            role = m["role"] if isinstance(m, dict) else m.role
+            content = (m["content"] if isinstance(m, dict) else m.content) or ""
+            if role == "assistant" and content:
+                answer = content.split("<｜")[0].strip()
+                if answer:
+                    break
     return (f"{answer or 'Could not produce an answer.'}"
             f"\n\n[Note: stopped early — {limit} limit reached]")
 

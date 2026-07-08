@@ -34,11 +34,10 @@ from pydantic import BaseModel, Field
 load_dotenv(Path(__file__).parents[2] / ".env")
 
 from rag.config import CONFIG
+from rag.query.web_search_agent import _cited_urls
 
 JUDGE_MODEL = CONFIG.gen_models["flash"]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-RESULTS = Path(__file__).parent / "results.jsonl"
-JUDGMENTS = Path(__file__).parent / "judgments.jsonl"
 METRICS = Path(__file__).parent / "baseline_metrics.json"
 NO_ANSWER = "Could not produce an answer."
 
@@ -165,7 +164,7 @@ def judge_failure(client, row: dict, verdict: Correctness) -> FailureAnalysis:
     )
 
 
-def write_metrics(rows: list[dict], judgments: dict[int, dict]) -> None:
+def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -> None:
     overall = Counter(j["overall"] for j in judgments.values())
     facts_total = sum(len(r["facts"]) for r in rows)
     facts_present = sum(1 for j in judgments.values()
@@ -182,39 +181,51 @@ def write_metrics(rows: list[dict], judgments: dict[int, dict]) -> None:
             label = j["failure"]["emerging_category"].strip().lower().replace(" ", "-")
             if label:
                 emerging[label] += 1
+    # Gate metric: judged correct AND carries at least one (mechanically
+    # trace-verified) markdown citation link.
+    correct_and_cited = sum(
+        1 for r in rows
+        if judgments[r["id"]]["overall"] == "correct" and _cited_urls(r["answer"])
+    )
     metrics = {
         "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "agent_model": rows[0]["model"],
         "judge_model": JUDGE_MODEL,
         "n": len(rows),
         "overall": dict(overall),
+        "correct_and_cited": correct_and_cited,
         "fact_recall": f"{facts_present}/{facts_total}",
         "per_category": {k: dict(v) for k, v in sorted(per_category.items())},
         "failure_categories": dict(failures.most_common()),
         "emerging_categories": dict(emerging.most_common()),
     }
-    METRICS.write_text(json.dumps(metrics, indent=2) + "\n")
+    # Debug-round/gate runs get their own metrics file; the baseline reference
+    # is only ever written by an untagged full run.
+    out = Path(__file__).parent / f"metrics_{tag}.json" if tag else METRICS
+    out.write_text(json.dumps(metrics, indent=2) + "\n")
 
     n_correct = overall.get("correct", 0)
     fail_str = ", ".join(f"{k} x{v}" for k, v in failures.most_common()) or "none"
     print(f"\n{n_correct}/{len(rows)} correct ({overall.get('partial', 0)} partial, "
-          f"{overall.get('wrong', 0)} wrong) | fact recall {facts_present}/{facts_total} "
-          f"| failures: {fail_str}")
+          f"{overall.get('wrong', 0)} wrong) | correct-and-cited {correct_and_cited}/{len(rows)} "
+          f"| fact recall {facts_present}/{facts_total} | failures: {fail_str}")
     for label, n in emerging.most_common():
         flag = "  << taxonomy-v2 candidate" if n >= 2 else ""
         print(f"  emerging: {label} x{n}{flag}")
-    print(f"wrote {METRICS}")
+    print(f"wrote {out}")
 
 
-def main() -> None:
+def main(tag: str = "") -> None:
+    results = Path(__file__).parent / (f"results_{tag}.jsonl" if tag else "results.jsonl")
+    judgments_path = Path(__file__).parent / (f"judgments_{tag}.jsonl" if tag else "judgments.jsonl")
     client = instructor.from_openai(
         OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"]),
         mode=instructor.Mode.TOOLS,
     )
-    rows = [json.loads(line) for line in RESULTS.open()]
+    rows = [json.loads(line) for line in results.open()]
     judged = {}
-    if JUDGMENTS.exists():
-        judged = {j["id"]: j for j in map(json.loads, JUDGMENTS.open()) if j}
+    if judgments_path.exists():
+        judged = {j["id"]: j for j in map(json.loads, judgments_path.open()) if j}
 
     for row in rows:
         if row["id"] in judged:
@@ -232,14 +243,19 @@ def main() -> None:
         }
         if verdict.overall != "correct":
             judgment["failure"] = judge_failure(client, row, verdict).model_dump()
-        with JUDGMENTS.open("a") as f:
+        with judgments_path.open("a") as f:
             f.write(json.dumps(judgment, ensure_ascii=False) + "\n")
         judged[row["id"]] = judgment
         fail = (judgment["failure"] or {}).get("categories", [])
         print(f"[{row['id']:2}] {verdict.overall:<8} {fail if fail else ''}")
 
-    write_metrics(rows, judged)
+    write_metrics(rows, judged, tag)
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tag", default="",
+                        help="read results_<tag>.jsonl, write judgments_<tag>.jsonl, skip metrics file")
+    main(parser.parse_args().tag)

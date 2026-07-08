@@ -1,0 +1,20 @@
+{
+  "date": "2026-07-08T13:09:32+00:00",
+  "agent_model": "deepseek/deepseek-v4-flash",
+  "judge_model": "deepseek/deepseek-v4-flash",
+  "n": 1,
+  "overall": {
+    "wrong": 1
+  },
+  "correct_and_cited": 0,
+  "fact_recall": "0/3",
+  "per_category": {
+    "synthesis": {
+      "wrong": 1
+    }
+  },
+  "failure_categories": {
+    "premature_stop": 1
+  },
+  "emerging_categories": {}
+}

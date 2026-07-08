@@ -22,7 +22,6 @@ import rag.query.web_search_agent as agent
 from rag.config import CONFIG
 
 EVAL_SET = Path(__file__).parent / "eval_set.jsonl"
-RESULTS = Path(__file__).parent / "results.jsonl"
 
 # Baseline runs on the cheap model; recorded in every row.
 agent.MODEL = CONFIG.gen_models["flash"]
@@ -55,12 +54,15 @@ def langfuse_stats(question: str) -> dict:
         return {}
 
 
-def main() -> None:
+def main(ids: set[int] | None = None, tag: str = "") -> None:
+    out = Path(__file__).parent / (f"results_{tag}.jsonl" if tag else "results.jsonl")
     done = set()
-    if RESULTS.exists():
-        done = {json.loads(line)["id"] for line in RESULTS.open() if line.strip()}
+    if out.exists():
+        done = {json.loads(line)["id"] for line in out.open() if line.strip()}
 
     for row in (json.loads(line) for line in EVAL_SET.open()):
+        if ids is not None and row["id"] not in ids:
+            continue
         if row["id"] in done:
             print(f"[{row['id']:2}] already in results — skipping")
             continue
@@ -77,12 +79,18 @@ def main() -> None:
             "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             **langfuse_stats(row["question"]),
         }
-        with RESULTS.open("a") as f:
+        with out.open("a") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
         print(f"     done in {seconds}s\n")
 
-    print(f"all questions present in {RESULTS}")
+    print(f"all requested questions present in {out}")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ids", default="", help="comma-separated question ids (default: all)")
+    parser.add_argument("--tag", default="", help="write results_<tag>.jsonl instead of results.jsonl")
+    args = parser.parse_args()
+    main({int(i) for i in args.ids.split(",") if i} or None, args.tag)
