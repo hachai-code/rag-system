@@ -159,3 +159,45 @@ amendment the gate number would likely be 15/20 (75%), still passing.
 (method + completeness line), date injection, tool descriptions, distillation
 (flash, >1500 tokens), citation verification (2 retries), budgets 10 iterations
 / $0.50 / 90s, best-effort fallback (3 attempts + transcript salvage).
+
+---
+
+## Self-critique A/B (2026-07-09, tags `crit_on` / `crit_off`)
+
+**The change:** one optional review pass (`SELF_CRITIQUE` flag) — when the model
+first produces a draft answer, a critique prompt asks it to re-read the draft
+against the gathered evidence, flag unsupported claims, and research any gaps
+before finalizing. Fires once per run; runs under the normal budgets.
+
+**The experiment:** 10 questions (the gate's 4 partials + 2 previously-fragile +
+4 stable corrects), both arms run fresh the same day, judged identically.
+
+| | critique ON | critique OFF |
+|---|---|---|
+| correct-and-cited | **7/10** | **6/10** |
+| fact recall | 27/30 | 24/30 |
+| mean wall time | **162s/question** | 125s/question |
+| total cost | $0.027 | $0.031 (≈ equal) |
+| runs ending on the time limit | **10/10** | 5/10 |
+| critique actually fired | 6/10 (rest hit the limit before any draft) | — |
+
+Per-question flips: critique helped q3, q7, q13 (each gained facts after the
+review pass — q13-on verifiably searched to confirm the red-card record
+post-critique); critique hurt q16 (284s of source-thrash → wrong) and q19
+(correct in the off arm). Net +1.
+
+**Measured verdict: self-critique did NOT reliably improve correctness here.**
+The +1 correct (and +3 fact recall) is smaller than the ±2-question run-to-run
+churn we've measured between *identical* configs (baseline→gate flipped q1/q3
+with no changes), so it cannot be distinguished from noise at N=10. The effects
+that ARE unambiguous: +30% mean latency, and the review pass turns every run
+into a time-limit exhaustion (10/10 vs 5/10) — at a 90s budget the critique
+doesn't get room to do its job (it only fired in 6 of 10 runs at all).
+
+Both proposed mechanisms were observed in the traces — critique genuinely
+triggers gap-filling research AND genuinely burns budget into thrash. They
+roughly cancel.
+
+**Decision: `SELF_CRITIQUE = False` by default** (code kept behind the flag).
+If revisited: pair it with a larger time budget and N≥30 per arm to detect a
+real effect, or trigger critique only when the draft cites <2 sources.

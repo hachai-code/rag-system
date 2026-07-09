@@ -38,7 +38,7 @@ from rag.query.web_search_agent import _cited_urls
 
 JUDGE_MODEL = CONFIG.gen_models["flash"]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-METRICS = Path(__file__).parent / "baseline_metrics.json"
+METRICS = Path(__file__).parent / "analysis" / "baseline_metrics.json"
 NO_ANSWER = "Could not produce an answer."
 
 Category = Literal["bad_search_queries", "wrong_source_selection", "synthesis_error",
@@ -201,7 +201,7 @@ def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -
     }
     # Debug-round/gate runs get their own metrics file; the baseline reference
     # is only ever written by an untagged full run.
-    out = Path(__file__).parent / f"metrics_{tag}.json" if tag else METRICS
+    out = Path(__file__).parent / "analysis" / f"metrics_{tag}.json" if tag else METRICS
     out.write_text(json.dumps(metrics, indent=2) + "\n")
 
     n_correct = overall.get("correct", 0)
@@ -216,8 +216,9 @@ def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -
 
 
 def main(tag: str = "") -> None:
-    results = Path(__file__).parent / (f"results_{tag}.jsonl" if tag else "results.jsonl")
-    judgments_path = Path(__file__).parent / (f"judgments_{tag}.jsonl" if tag else "judgments.jsonl")
+    data = Path(__file__).parent / "data"
+    results = data / (f"results_{tag}.jsonl" if tag else "results.jsonl")
+    judgments_path = data / (f"judgments_{tag}.jsonl" if tag else "judgments.jsonl")
     client = instructor.from_openai(
         OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"]),
         mode=instructor.Mode.TOOLS,

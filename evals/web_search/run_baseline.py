@@ -55,7 +55,7 @@ def langfuse_stats(question: str) -> dict:
 
 
 def main(ids: set[int] | None = None, tag: str = "") -> None:
-    out = Path(__file__).parent / (f"results_{tag}.jsonl" if tag else "results.jsonl")
+    out = Path(__file__).parent / "data" / (f"results_{tag}.jsonl" if tag else "results.jsonl")
     done = set()
     if out.exists():
         done = {json.loads(line)["id"] for line in out.open() if line.strip()}
@@ -75,6 +75,7 @@ def main(ids: set[int] | None = None, tag: str = "") -> None:
             **row,
             "answer": answer,
             "model": agent.MODEL,
+            "critique": agent.SELF_CRITIQUE,
             "seconds": seconds,
             "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             **langfuse_stats(row["question"]),
@@ -92,5 +93,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ids", default="", help="comma-separated question ids (default: all)")
     parser.add_argument("--tag", default="", help="write results_<tag>.jsonl instead of results.jsonl")
+    parser.add_argument("--no-critique", action="store_true",
+                        help="disable the self-critique pass (A/B control arm)")
     args = parser.parse_args()
+    if args.no_critique:
+        agent.SELF_CRITIQUE = False
     main({int(i) for i in args.ids.split(",") if i} or None, args.tag)

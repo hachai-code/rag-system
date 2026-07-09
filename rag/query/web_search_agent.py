@@ -45,6 +45,10 @@ MAX_CITATION_RETRIES = 2
 
 DISTILL_MODEL = CONFIG.gen_models["flash"]
 DISTILL_OVER_TOKENS = 1500  # pages shorter than this enter the transcript raw
+# One review pass of the draft answer before returning. Measured on/off over 10
+# eval questions (tuning-log.md): +1 correct — within run-to-run noise — for +30%
+# latency and guaranteed time-limit exhaustion. Off by default at this budget.
+SELF_CRITIQUE = False
 
 _encoder = tiktoken.get_encoding("o200k_base")
 
@@ -68,6 +72,13 @@ Answer requirements:
 - Cite sources as markdown links [title](https://url) next to the claims they support. Only cite URLs from your search results or fetched pages — cited URLs are checked against your research trace and answers citing unseen URLs are rejected.
 - Include every concrete detail you encountered that bears on the question — dates, numbers, names, titles, records, "firsts" — even secondary ones. A research answer errs on the side of completeness, not brevity.
 - If something could not be verified, say so explicitly instead of guessing."""
+
+CRITIQUE_PROMPT = """Before finalizing, review the draft answer you just wrote against the evidence actually gathered above (search results and fetched pages):
+1. Is every part of the question answered?
+2. Is every claim supported by a page you read or a search result you saw? Flag any claim you cannot point to evidence for — verify it or remove it.
+3. Are any load-bearing facts (dates, numbers, names, "firsts") still unverified or missing?
+
+If you find gaps, do the missing research now (search_web / fetch_page), then write the final answer. If the draft holds up, return it — improved where the review found weaknesses."""
 
 TOOLS = [
     {
@@ -317,6 +328,7 @@ def run_agent(question: str) -> str:
         timeout=MAX_SECONDS,
     )
     state = AgentState(question=question)
+    critiqued = False
     messages: list = [
         {"role": "system", "content": SYSTEM_PROMPT.format(today=date.today().isoformat())},
         {"role": "user", "content": question},
@@ -339,6 +351,11 @@ def run_agent(question: str) -> str:
             messages.append(msg)
 
             if not msg.tool_calls:
+                if SELF_CRITIQUE and not critiqued:
+                    critiqued = True
+                    print("~> self-critique pass")
+                    messages.append({"role": "user", "content": CRITIQUE_PROMPT})
+                    continue
                 unknown = _cited_urls(msg.content) - state.sources
                 if unknown and state.citation_retries < MAX_CITATION_RETRIES:
                     state.citation_retries += 1
@@ -377,7 +394,8 @@ def run_agent(question: str) -> str:
             metadata={"iterations": state.iterations,
                       "cost_usd": round(state.cost_spent, 4),
                       "limit_hit": limit,
-                      "citation_retries": state.citation_retries},
+                      "citation_retries": state.citation_retries,
+                      "critiqued": critiqued},
         )
     return answer
 
