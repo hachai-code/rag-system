@@ -31,6 +31,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
+from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -183,6 +184,22 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     answer_text.append(event["text"])
                 yield f"data: {json.dumps(event)}\n\n"
             span.update(output="".join(answer_text))
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+class AgentRequest(BaseModel):
+    question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
+
+
+# SSE: step_started / answer_token / tool_call / tool_result / critique events
+# stream in as the agent works, terminated by one done (or error) event.
+@app.post("/agent/stream")
+@limiter.limit(RATE_LIMIT)
+def agent_stream(request: Request, body: AgentRequest) -> StreamingResponse:
+    def events():
+        for event in stream_agent(body.question):
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

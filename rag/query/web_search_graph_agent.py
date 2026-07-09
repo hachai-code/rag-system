@@ -18,6 +18,7 @@ from typing import Annotated, TypedDict
 from langfuse import get_client
 from langfuse.openai import OpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from ..config import CONFIG
@@ -84,19 +85,53 @@ def limit_hit(state: AgentState) -> str | None:
 
 
 def call_model(state: AgentState) -> dict:
-    resp = _client().chat.completions.create(
-        model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=state["messages"]
+    # writer is a no-op under .invoke(); events only flow on .stream(stream_mode="custom")
+    writer = get_stream_writer()
+    writer({"type": "step_started", "node": "call_model",
+            "iteration": state["iterations"] + 1})
+    stream = _client().chat.completions.create(
+        model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=state["messages"],
+        stream=True, stream_options={"include_usage": True},
     )
+    # Accumulate by hand: the SDK's ChatCompletionStreamState concatenates every
+    # string field, and OpenRouter repeats role="assistant" in each delta,
+    # producing a corrupt message the next request chokes on.
+    content, tool_calls, usage = [], {}, None
+    for chunk in stream:  # last chunk is usage-only with empty choices
+        usage = chunk.usage or usage
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta.content:
+            content.append(delta.content)
+            writer({"type": "answer_token", "text": delta.content})
+        for tc in delta.tool_calls or []:  # arguments arrive in fragments
+            slot = tool_calls.setdefault(tc.index, {
+                "id": "", "type": "function",
+                "function": {"name": "", "arguments": ""},
+            })
+            slot["id"] = tc.id or slot["id"]
+            if tc.function:
+                slot["function"]["name"] += tc.function.name or ""
+                slot["function"]["arguments"] += tc.function.arguments or ""
     # plain dict, not the SDK object: keeps the state checkpoint-serializable
+    message = {"role": "assistant"}
+    if content:
+        message["content"] = "".join(content)
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
     return {
-        "messages": [resp.choices[0].message.model_dump(exclude_none=True)],
+        "messages": [message],
         "iterations": state["iterations"] + 1,
-        "cost_spent": state["cost_spent"] + (getattr(resp.usage, "cost", None) or 0.0),
+        "cost_spent": state["cost_spent"] + (getattr(usage, "cost", None) or 0.0),
     }
 
 
 def run_tools(state: AgentState) -> dict:
     """Execute every tool call in the last assistant message."""
+    writer = get_stream_writer()
+    writer({"type": "step_started", "node": "run_tools",
+            "iteration": state["iterations"]})
     sources = set(state["sources"])
     cost = state["cost_spent"]
     tool_messages = []
@@ -105,6 +140,8 @@ def run_tools(state: AgentState) -> dict:
         print(f"-> {name}({arguments})  "
               f"[iter {state['iterations']}, ${cost:.4f}, "
               f"{time.monotonic() - state['started']:.1f}s]")
+        writer({"type": "tool_call", "name": name, "arguments": arguments,
+                "id": call["id"]})
         with get_client().start_as_current_observation(
             as_type="tool", name=name, input=arguments
         ) as tool_obs:
@@ -114,6 +151,8 @@ def run_tools(state: AgentState) -> dict:
                 result, distill_cost = _distill(_client(), state["question"], result)
                 cost += distill_cost
             tool_obs.update(output=result)
+        writer({"type": "tool_result", "name": name, "id": call["id"],
+                "preview": result[:500], "chars": len(result)})
         sources |= _urls_in(arguments) | _urls_in(result)
         tool_messages.append(
             {"role": "tool", "tool_call_id": call["id"], "content": result}
@@ -124,9 +163,13 @@ def run_tools(state: AgentState) -> dict:
 def review(state: AgentState) -> dict:
     """Gatekeep a draft answer: critique once if enabled, reject unseen
     citations, otherwise accept."""
+    writer = get_stream_writer()
+    writer({"type": "step_started", "node": "review",
+            "iteration": state["iterations"]})
     draft = state["messages"][-1].get("content") or ""
     if SELF_CRITIQUE and not state["critiqued"]:
         print("~> self-critique pass")
+        writer({"type": "critique", "verdict": "self_critique"})
         return {
             "messages": [{"role": "user", "content": CRITIQUE_PROMPT}],
             "critiqued": True,
@@ -134,6 +177,8 @@ def review(state: AgentState) -> dict:
     unknown = _cited_urls(draft) - state["sources"]
     if unknown and state["citation_retries"] < MAX_CITATION_RETRIES:
         print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
+        writer({"type": "critique", "verdict": "rejected_citations",
+                "urls": sorted(unknown)})
         get_client().create_event(name="citation-rejected", input=sorted(unknown))
         return {
             "messages": [{
@@ -146,11 +191,14 @@ def review(state: AgentState) -> dict:
             }],
             "citation_retries": state["citation_retries"] + 1,
         }
+    writer({"type": "critique", "verdict": "accepted"})
     return {"answer": draft}
 
 
 def best_effort(state: AgentState) -> dict:
     """One bounded no-tools call: answer from the research gathered so far."""
+    get_stream_writer()({"type": "step_started", "node": "best_effort",
+                         "iteration": state["iterations"]})
     limit = limit_hit(state) or "unknown"
     stop_msg = {
         "role": "user",
@@ -252,6 +300,40 @@ def run_agent(question: str) -> str:
                       "critiqued": final["critiqued"]},
         )
     return final["answer"]
+
+
+def stream_agent(question: str):
+    """Yield agent events (dicts) as they happen; the final answer arrives in
+    the terminal `done` event, or `error` if the run blew up."""
+    with get_client().start_as_current_observation(
+        as_type="span", name="web-search-agent", input=question
+    ) as span:
+        try:
+            final = None
+            for mode, chunk in GRAPH.stream(
+                _initial_state(question),
+                config={"recursion_limit": 3 * MAX_ITERATIONS + 10},
+                stream_mode=["custom", "values"],
+            ):
+                if mode == "custom":
+                    yield chunk
+                else:
+                    final = chunk  # full state after each superstep; keep the last
+            span.update(
+                output=final["answer"],
+                metadata={"iterations": final["iterations"],
+                          "cost_usd": round(final["cost_spent"], 4),
+                          "limit_hit": final["limit"],
+                          "citation_retries": final["citation_retries"],
+                          "critiqued": final["critiqued"]},
+            )
+            yield {"type": "done", "answer": final["answer"],
+                   "sources": sorted(final["sources"]),
+                   "iterations": final["iterations"],
+                   "cost_usd": round(final["cost_spent"], 4),
+                   "limit": final["limit"]}
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
 
 
 def run_hitl(question: str) -> str:
