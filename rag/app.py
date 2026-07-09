@@ -31,6 +31,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
+from .query.deepagent import run_deepagent
 from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
@@ -202,6 +203,26 @@ def agent_stream(request: Request, body: AgentRequest) -> StreamingResponse:
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+class DeepAgentRequest(BaseModel):
+    question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
+    # The research thread this run belongs to; keys the durable state (Phase 2+).
+    thread_id: Annotated[str, Field(min_length=1)]
+
+
+class DeepAgentResponse(BaseModel):
+    answer: str
+    thread_id: str
+
+
+# The Deep Agent path: answers from the corpus via its own tool-driven control
+# flow. The run is traced (span lives in deepagent.run_deepagent).
+@app.post("/ask/agent")
+@limiter.limit(RATE_LIMIT)
+def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse:
+    result = run_deepagent(body.question, body.thread_id)
+    return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
 
 
 # The chunk a citation points at, reconstructed in its place for the frontend.

@@ -35,3 +35,11 @@ structured_max_tokens = 4096              # the JSON-claims path runs longer tha
 
 [ocr]
 ocr_model = "deepseek/deepseek-v4-pro"    # multimodal; transcribes slide images via OpenRouter
+
+[agent]
+# The Deep Agent path (/ask/agent). Runs on the cheap flash model via OpenRouter,
+# same seam as generation. Never pro — flash covers the tool-calling this needs.
+agent_model = "deepseek/deepseek-v4-flash"
+research_subagent_model = "deepseek/deepseek-v4-flash"
+agent_top_k = 25            # chunks the retrieve_corpus tool hands the agent
+agent_method = "rerank"     # retriever funnel the tool uses (vector | hybrid | rerank)

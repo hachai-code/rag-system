@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
+from rag.query.deepagent import format_hits_for_deepagent
 from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
@@ -164,6 +165,16 @@ def test_rerank_empty_candidates_returns_empty():
     (HyPE not populated), the candidate list is empty and rerank must no-op rather than
     call the cross-encoder on nothing."""
     assert _rerank("any question", [], k=5) == []
+
+
+def test_format_hits_for_deepagent_is_numbered_and_citable():
+    """The retrieve_corpus tool renders hits as numbered, cite-able passages: every
+    hit appears with a 1-based index the agent can cite by, plus its title and text."""
+    text = format_hits_for_deepagent(HITS)
+    for i, hit in enumerate(HITS, 1):
+        assert f"[{i}]" in text
+        assert hit["title"] in text
+        assert hit["content"] in text
 
 
 def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):

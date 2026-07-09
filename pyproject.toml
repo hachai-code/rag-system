@@ -26,6 +26,8 @@ dependencies = [
     "deepeval>=4.0.7",
     "trafilatura>=2.1.0",
     "langgraph>=1.2",
+    "deepagents",
+    "langchain-deepseek",
 ]
 
 [dependency-groups]
