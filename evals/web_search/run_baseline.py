@@ -18,13 +18,9 @@ load_dotenv(Path(__file__).parents[2] / ".env")
 
 from langfuse import get_client
 
-import rag.query.web_search_agent as agent
 from rag.config import CONFIG
 
 EVAL_SET = Path(__file__).parent / "eval_set.jsonl"
-
-# Baseline runs on the cheap model; recorded in every row.
-agent.MODEL = CONFIG.gen_models["flash"]
 
 
 def langfuse_stats(question: str) -> dict:
@@ -54,7 +50,7 @@ def langfuse_stats(question: str) -> dict:
         return {}
 
 
-def main(ids: set[int] | None = None, tag: str = "") -> None:
+def main(ids: set[int] | None = None, tag: str = "", impl: str = "loop") -> None:
     out = Path(__file__).parent / "data" / (f"results_{tag}.jsonl" if tag else "results.jsonl")
     done = set()
     if out.exists():
@@ -76,6 +72,7 @@ def main(ids: set[int] | None = None, tag: str = "") -> None:
             "answer": answer,
             "model": agent.MODEL,
             "critique": agent.SELF_CRITIQUE,
+            "impl": impl,
             "seconds": seconds,
             "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             **langfuse_stats(row["question"]),
@@ -95,7 +92,16 @@ if __name__ == "__main__":
     parser.add_argument("--tag", default="", help="write results_<tag>.jsonl instead of results.jsonl")
     parser.add_argument("--no-critique", action="store_true",
                         help="disable the self-critique pass (A/B control arm)")
+    parser.add_argument("--impl", choices=["loop", "graph"], default="loop",
+                        help="agent implementation: hand-written loop or LangGraph")
     args = parser.parse_args()
+
+    if args.impl == "graph":
+        import rag.query.web_search_graph_agent as agent
+    else:
+        import rag.query.web_search_agent as agent
+    # Baseline runs on the cheap model; recorded in every row.
+    agent.MODEL = CONFIG.gen_models["flash"]
     if args.no_critique:
         agent.SELF_CRITIQUE = False
-    main({int(i) for i in args.ids.split(",") if i} or None, args.tag)
+    main({int(i) for i in args.ids.split(",") if i} or None, args.tag, args.impl)
