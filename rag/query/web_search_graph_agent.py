@@ -17,6 +17,7 @@ from typing import Annotated, TypedDict
 
 from langfuse import get_client
 from langfuse.openai import OpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from ..config import CONFIG
@@ -57,7 +58,7 @@ def _client() -> OpenAI:
 
 class AgentState(TypedDict):
     question: str
-    messages: Annotated[list, operator.add]  # raw OpenAI-SDK messages, appended
+    messages: Annotated[list, operator.add]  # OpenAI-format message dicts, appended
     sources: set[str]  # every URL seen in tool traffic
     iterations: int
     cost_spent: float
@@ -86,8 +87,9 @@ def call_model(state: AgentState) -> dict:
     resp = _client().chat.completions.create(
         model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=state["messages"]
     )
+    # plain dict, not the SDK object: keeps the state checkpoint-serializable
     return {
-        "messages": [resp.choices[0].message],
+        "messages": [resp.choices[0].message.model_dump(exclude_none=True)],
         "iterations": state["iterations"] + 1,
         "cost_spent": state["cost_spent"] + (getattr(resp.usage, "cost", None) or 0.0),
     }
@@ -98,22 +100,23 @@ def run_tools(state: AgentState) -> dict:
     sources = set(state["sources"])
     cost = state["cost_spent"]
     tool_messages = []
-    for call in state["messages"][-1].tool_calls:
-        print(f"-> {call.function.name}({call.function.arguments})  "
+    for call in state["messages"][-1]["tool_calls"]:
+        name, arguments = call["function"]["name"], call["function"]["arguments"]
+        print(f"-> {name}({arguments})  "
               f"[iter {state['iterations']}, ${cost:.4f}, "
               f"{time.monotonic() - state['started']:.1f}s]")
         with get_client().start_as_current_observation(
-            as_type="tool", name=call.function.name, input=call.function.arguments
+            as_type="tool", name=name, input=arguments
         ) as tool_obs:
-            result = _execute_tool(call.function.name, call.function.arguments)
-            if (call.function.name == "fetch_page"
+            result = _execute_tool(name, arguments)
+            if (name == "fetch_page"
                     and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS):
                 result, distill_cost = _distill(_client(), state["question"], result)
                 cost += distill_cost
             tool_obs.update(output=result)
-        sources |= _urls_in(call.function.arguments) | _urls_in(result)
+        sources |= _urls_in(arguments) | _urls_in(result)
         tool_messages.append(
-            {"role": "tool", "tool_call_id": call.id, "content": result}
+            {"role": "tool", "tool_call_id": call["id"], "content": result}
         )
     return {"messages": tool_messages, "sources": sources, "cost_spent": cost}
 
@@ -121,7 +124,7 @@ def run_tools(state: AgentState) -> dict:
 def review(state: AgentState) -> dict:
     """Gatekeep a draft answer: critique once if enabled, reject unseen
     citations, otherwise accept."""
-    draft = state["messages"][-1].content
+    draft = state["messages"][-1].get("content") or ""
     if SELF_CRITIQUE and not state["critiqued"]:
         print("~> self-critique pass")
         return {
@@ -171,10 +174,8 @@ def best_effort(state: AgentState) -> dict:
     if not answer:
         # salvage: the model's last substantive narration beats a shrug
         for m in reversed(state["messages"]):
-            role = m["role"] if isinstance(m, dict) else m.role
-            content = (m["content"] if isinstance(m, dict) else m.content) or ""
-            if role == "assistant" and content:
-                answer = content.split("<｜")[0].strip()
+            if m["role"] == "assistant" and m.get("content"):
+                answer = m["content"].split("<｜")[0].strip()
                 if answer:
                     break
     return {
@@ -189,7 +190,7 @@ def best_effort(state: AgentState) -> dict:
 
 def route_response(state: AgentState) -> str:
     """After call_model: run requested tools, or review the draft answer."""
-    return "run_tools" if state["messages"][-1].tool_calls else "review"
+    return "run_tools" if state["messages"][-1].get("tool_calls") else "review"
 
 
 def continue_or_stop(state: AgentState) -> str:
@@ -212,11 +213,8 @@ _builder.add_edge("best_effort", END)
 GRAPH = _builder.compile()
 
 
-def run_agent(question: str) -> str:
-    """Answer the question by letting the model drive research, within hard limits:
-    MAX_ITERATIONS LLM calls, MAX_COST_USD spend, MAX_SECONDS wall time. On a limit
-    the agent answers from what it has gathered so far instead of raising."""
-    state: AgentState = {
+def _initial_state(question: str) -> AgentState:
+    return {
         "question": question,
         "messages": [
             {"role": "system",
@@ -232,6 +230,13 @@ def run_agent(question: str) -> str:
         "limit": None,
         "answer": "",
     }
+
+
+def run_agent(question: str) -> str:
+    """Answer the question by letting the model drive research, within hard limits:
+    MAX_ITERATIONS LLM calls, MAX_COST_USD spend, MAX_SECONDS wall time. On a limit
+    the agent answers from what it has gathered so far instead of raising."""
+    state = _initial_state(question)
     with get_client().start_as_current_observation(
         as_type="span", name="web-search-agent", input=question
     ) as span:
@@ -249,13 +254,34 @@ def run_agent(question: str) -> str:
     return final["answer"]
 
 
+def run_hitl(question: str) -> str:
+    """Human-in-the-loop demo: same graph, but compiled with a checkpointer and
+    a static interrupt, so it pauses for approval before every tool batch.
+    Untraced CLI exercise, not a production path."""
+    graph = _builder.compile(
+        checkpointer=InMemorySaver(), interrupt_before=["run_tools"]
+    )
+    config = {"configurable": {"thread_id": "cli"},
+              "recursion_limit": 3 * MAX_ITERATIONS + 10}
+    state = graph.invoke(_initial_state(question), config)
+    while graph.get_state(config).next:  # paused before run_tools
+        for call in state["messages"][-1]["tool_calls"]:
+            print(f"?? wants {call['function']['name']}({call['function']['arguments']})")
+        if input("approve? [Y/n] ").strip().lower() == "n":
+            return "Aborted at human review."
+        state = graph.invoke(None, config)  # resume from the checkpoint
+    return state["answer"]
+
+
 if __name__ == "__main__":
     import sys
 
-    question = sys.argv[1] if len(sys.argv) > 1 else (
+    hitl = "--hitl" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--hitl"]
+    question = args[0] if args else (
         "Which was released more recently, the latest stable Python or the latest "
         "Node.js LTS, and what is one headline feature of each?"
     )
     print(f"Q: {question}\n")
-    print(run_agent(question))
+    print(run_hitl(question) if hitl else run_agent(question))
     get_client().flush()
