@@ -26,6 +26,7 @@ dependencies = [
     "deepeval>=4.0.7",
     "trafilatura>=2.1.0",
     "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=2.0.0",
     "deepagents",
     "langchain-deepseek",
 ]

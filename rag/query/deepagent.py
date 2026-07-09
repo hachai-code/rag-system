@@ -13,13 +13,16 @@ existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 
 from os import environ
 
+import psycopg
 from deepagents import create_deep_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
 
 from ..config import CONFIG
-from ..db import connect
+from ..db import DB_URL, connect
 from .answer import OPENROUTER_BASE_URL
 from .retrieve import retrieve
 
@@ -64,10 +67,21 @@ def retrieve_corpus(query: str) -> str:
     return format_hits_for_deepagent(hits)
 
 
+# A single long-lived connection held for the process lifetime: the agent is
+# compiled once at import, so PostgresSaver.from_conn_string (a context manager
+# that closes on exit) won't do — we open the connection ourselves and keep it.
+# autocommit + prepare_threshold=0 + dict_row mirror what from_conn_string sets.
+_conn = psycopg.connect(
+    DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
+)
+_checkpointer = PostgresSaver(_conn)
+_checkpointer.setup()  # idempotent: creates checkpoint tables on first run
+
 AGENT = create_deep_agent(
     model=model,
     tools=[retrieve_corpus],
     system_prompt=AGENT_PROMPT,
+    checkpointer=_checkpointer,
 )
 
 
