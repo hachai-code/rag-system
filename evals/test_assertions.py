@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
-from rag.query.deepagent import format_hits_for_deepagent
+from rag.query.deepagent import _step_label, format_hits_for_deepagent
 from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
@@ -175,6 +175,15 @@ def test_format_hits_for_deepagent_is_numbered_and_citable():
         assert f"[{i}]" in text
         assert hit["title"] in text
         assert hit["content"] in text
+
+
+def test_step_label_summarizes_each_tool_call():
+    """The live trace labels each tool call by its intent, folding in the salient arg
+    (query/url/description). Unknown tools fall back to their raw name."""
+    assert "stillness" in _step_label("retrieve_corpus", {"query": "stillness"})
+    assert "example.com" in _step_label("fetch_page", {"url": "https://example.com"})
+    assert _step_label("write_todos", {}) == "Planning the research"
+    assert _step_label("mystery_tool", {}) == "mystery_tool"
 
 
 def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):

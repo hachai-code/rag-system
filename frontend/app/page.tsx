@@ -16,7 +16,7 @@ export default function Home() {
   const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
   const [deepAgent, setDeepAgent] = useState(false);
-  const [steps, setSteps] = useState<{ scope: string; text: string }[]>([]);
+  const [steps, setSteps] = useState<Step[]>([]);
   // One research thread per browser session, so follow-ups reuse the durable
   // notebook the deep agent builds up (multi-turn continuity).
   const [threadId] = useState(() => crypto.randomUUID());
@@ -66,10 +66,18 @@ export default function Home() {
           if (!data) continue;
           const event: DeepAgentEvent = JSON.parse(data);
           if (event.type === "status") {
-            setSteps((prev) => [...prev, { scope: event.scope, text: event.text }]);
+            setSteps((prev) => [
+              ...prev,
+              { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
+            ]);
+          } else if (event.type === "result") {
+            // Attach the tool result to the step it belongs to (matched by call_id).
+            setSteps((prev) =>
+              prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
+            );
           } else if (event.type === "answer") {
             setAnswer(event.text);
-          } else {
+          } else if (event.type === "error") {
             setAnswer(`Error: ${event.message}`);
           }
         }
@@ -197,14 +205,11 @@ export default function Home() {
       </form>
 
       {steps.length > 0 && (
-        <ol className="mb-6 space-y-1 border-l-2 border-gray-200 pl-4 text-sm text-gray-500">
+        <div className="mb-6 space-y-1.5 border-l-2 border-gray-200 pl-4">
           {steps.map((s, i) => (
-            <li key={i} className={s.scope === "research" ? "pl-4 text-gray-400" : ""}>
-              {loading && i === steps.length - 1 ? "▸ " : "· "}
-              {s.text}
-            </li>
+            <TraceStep key={s.callId || i} step={s} active={loading && i === steps.length - 1} />
           ))}
-        </ol>
+        </div>
       )}
 
       {answer && (
@@ -212,6 +217,8 @@ export default function Home() {
           <AnswerBody answer={answer} citations={citations} openSource={openSource} />
         </article>
       )}
+
+      {deepAgent && answer && <WebSources answer={answer} />}
 
       {citations.length > 0 && (
         <section>
@@ -260,6 +267,64 @@ export default function Home() {
         </section>
       )}
     </main>
+  );
+}
+
+// One tool call in the agent's live trace, plus its result once it arrives.
+type Step = { callId: string; scope: string; tool: string; label: string; result?: string };
+
+// A step in the reasoning trace: a tool badge + summary, collapsible to reveal a
+// preview of what the tool returned. Research-subagent steps are indented. Until
+// the result lands the step is a plain line (nothing to expand); the active step
+// shows a ▸ marker while the agent works.
+function TraceStep({ step, active }: { step: Step; active: boolean }) {
+  const indent = step.scope === "research" ? "ml-4" : "";
+  const head = (
+    <>
+      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500">
+        {step.tool}
+      </span>{" "}
+      <span className="text-gray-600">{step.label}</span>
+      {active && !step.result && <span className="text-gray-300"> ▸</span>}
+    </>
+  );
+  if (!step.result) {
+    return <div className={`text-sm ${indent}`}>{head}</div>;
+  }
+  return (
+    <details className={`text-sm ${indent}`}>
+      <summary className="cursor-pointer marker:text-gray-300">{head}</summary>
+      <pre className="ml-4 mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-500">
+        {step.result}
+      </pre>
+    </details>
+  );
+}
+
+// The deep agent cites web sources as inline URLs in its answer. Pull them out into
+// clickable chips linking to each source (corpus points cite [n] inline).
+function WebSources({ answer }: { answer: string }) {
+  const urls = [
+    ...new Set((answer.match(/https?:\/\/[^\s)\]<>"']+/g) ?? []).map((u) => u.replace(/[.,;]+$/, ""))),
+  ];
+  if (urls.length === 0) return null;
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">Web sources</h2>
+      <div className="flex flex-wrap gap-2">
+        {urls.map((u, i) => (
+          <a
+            key={u}
+            href={u}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-gray-300 px-3 py-1 text-sm text-blue-600 hover:bg-gray-100"
+          >
+            [{i + 1}] {new URL(u).hostname.replace(/^www\./, "")}
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 

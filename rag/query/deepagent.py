@@ -240,32 +240,34 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     return {"status": "done", "answer": answer, "thread_id": thread_id}
 
 
-def _describe_step(msg):
-    """Turn one streamed AI message's tool calls into human-readable status text.
-    Yields nothing for non-AI messages (tool results, etc.)."""
-    if getattr(msg, "type", None) != "ai":
-        return
-    for call in msg.tool_calls or []:
-        name, args = call.get("name"), call.get("args") or {}
-        if name == "retrieve_corpus":
-            yield f"Searching the corpus for “{args.get('query', '')}”"
-        elif name == "task":
-            desc = " ".join(args.get("description", "").split())
-            yield f"Delegating research: {desc[:100]}…" if len(desc) > 100 else f"Delegating research: {desc}"
-        elif name == "web_search":
-            yield f"Web search: “{args.get('query', '')}”"
-        elif name == "fetch_page":
-            yield f"Reading {args.get('url', '')}"
-        elif name == "write_todos":
-            yield "Planning the research"
-        else:
-            yield name
+def _step_label(name: str, args: dict) -> str:
+    """Human-readable summary for one tool call. Pure: (name, args) -> label."""
+    if name == "retrieve_corpus":
+        return f"Searching the corpus for “{args.get('query', '')}”"
+    if name == "task":
+        desc = " ".join(args.get("description", "").split())
+        return f"Delegating research: {desc[:100]}…" if len(desc) > 100 else f"Delegating research: {desc}"
+    if name == "web_search":
+        return f"Web search: “{args.get('query', '')}”"
+    if name == "fetch_page":
+        return f"Reading {args.get('url', '')}"
+    if name == "write_todos":
+        return "Planning the research"
+    return name
+
+
+def _preview(content, limit: int = 600) -> str:
+    """A short, readable snippet of a tool result for the collapsible trace step."""
+    text = (content if isinstance(content, str) else str(content)).strip()
+    return text[:limit] + "…" if len(text) > limit else text
 
 
 def stream_deepagent(question: str, thread_id: str):
-    """Yield event dicts as the deep agent works: `status` steps as it retrieves,
-    plans, and delegates web research (subagent steps included via subgraphs), then
-    a terminal `answer` — or `error` if the run blew up. Mirrors stream_agent()."""
+    """Yield event dicts as the deep agent works: a `status` event per tool call
+    (with `call_id`, `tool`, `label`) and a `result` event per tool result (the
+    preview, correlated by `call_id`), so the UI can show each step's call and its
+    result. Subagent steps stream too (via subgraphs). Terminated by one `answer`
+    — or `error` if the run blew up. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}}
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
@@ -281,8 +283,22 @@ def stream_deepagent(question: str, thread_id: str):
                 for delta in (update or {}).values():
                     messages = delta.get("messages", []) if isinstance(delta, dict) else []
                     for msg in messages:
-                        for text in _describe_step(msg):
-                            yield {"type": "status", "scope": scope, "text": text}
+                        if getattr(msg, "type", None) == "ai":
+                            for call in msg.tool_calls or []:
+                                args = call.get("args") or {}
+                                yield {
+                                    "type": "status",
+                                    "scope": scope,
+                                    "call_id": call.get("id", ""),
+                                    "tool": call.get("name", ""),
+                                    "label": _step_label(call.get("name", ""), args),
+                                }
+                        elif getattr(msg, "type", None) == "tool":
+                            yield {
+                                "type": "result",
+                                "call_id": getattr(msg, "tool_call_id", ""),
+                                "preview": _preview(msg.content),
+                            }
             # The run either finished or paused at the HITL gate; the stream ends
             # either way, so read the terminal state and emit the matching event.
             state = AGENT.get_state(config)

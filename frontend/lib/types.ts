@@ -34,11 +34,13 @@ export interface DeepAgentResponse {
   thread_id: string;
 }
 
-// SSE from POST /ask/agent/stream: `status` steps stream in as the agent works
+// SSE from POST /ask/agent/stream: a `status` event per tool call and a `result`
+// event per tool result (correlated by call_id) stream in as the agent works
 // (scope "research" = inside the web-research subagent), then one terminal
 // `answer` — or `error` if the run failed.
 export type DeepAgentEvent =
-  | { type: "status"; scope: "main" | "research"; text: string }
+  | { type: "status"; scope: "main" | "research"; call_id: string; tool: string; label: string }
+  | { type: "result"; call_id: string; preview: string }
   | { type: "answer"; text: string; thread_id: string }
   | { type: "error"; message: string };
 
