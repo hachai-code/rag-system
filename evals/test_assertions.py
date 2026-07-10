@@ -177,6 +177,18 @@ def test_format_hits_for_deepagent_is_numbered_and_citable():
         assert hit["content"] in text
 
 
+def test_format_hits_registry_keeps_stable_numbers():
+    """With a shared registry, each chunk keeps a stable [n] across retrievals: a chunk
+    seen earlier reuses its number instead of renumbering to [1], and the registry
+    records the chunk_id so the frontend can open the passage."""
+    registry: dict = {}
+    first = format_hits_for_deepagent(HITS, registry)
+    assert "[1]" in first and "[2]" in first
+    again = format_hits_for_deepagent([HITS[1]], registry)  # re-retrieve the 2nd hit alone
+    assert "[2]" in again and "[1]" not in again
+    assert registry[HITS[1]["id"]]["chunk_id"] == HITS[1]["id"]
+
+
 def test_step_label_summarizes_each_tool_call():
     """The live trace labels each tool call by its intent, folding in the salient arg
     (query/url/description). Unknown tools fall back to their raw name."""

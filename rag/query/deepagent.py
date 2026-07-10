@@ -14,11 +14,13 @@ through OpenRouter (the same seam generation uses) via ChatOpenAI, reusing the
 existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 """
 
+import re
 from os import environ
 
 import psycopg
 from deepagents import create_deep_agent
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
@@ -95,26 +97,48 @@ research_model = ChatOpenAI(
 )
 
 
-def format_hits_for_deepagent(hits: list[dict]) -> str:
+# Per-run registries of corpus passages the agent has retrieved, keyed by thread_id:
+# retrieve_corpus fills one so a passage keeps the same [n] across repeated retrievals
+# and stream_deepagent can list the cited passages as sources. Keyed by thread_id
+# (not a contextvar) because the tool runs in a different thread than the streaming
+# generator. stream_deepagent resets and pops its entry each run.
+# ponytail: module dict, one active run per thread_id (same as the checkpointer assumes).
+_registries: dict[str, dict] = {}
+
+
+def format_hits_for_deepagent(hits: list[dict], registry: dict | None = None) -> str:
     """Render retrieved chunks as numbered, cite-able passages for the deep agent.
 
     Each hit becomes a `[n] Title (source)` header over its text, so the agent can
-    cite a passage by its number and the reader can trace it back to a document."""
+    cite a passage by its number and the reader can trace it back to a document.
+    Numbers are assigned by chunk id in `registry` and reused across calls, so a
+    passage keeps its [n] no matter how often it's retrieved. Without a registry
+    numbering is positional from 1."""
     if not hits:
         return "No relevant passages found in the corpus."
-    blocks = [
-        f"[{i}] {hit['title']} ({hit['source']})\n{hit['content']}"
-        for i, hit in enumerate(hits, 1)
-    ]
+    if registry is None:
+        registry = {}
+    blocks = []
+    for hit in hits:
+        entry = registry.get(hit["id"])
+        if entry is None:
+            entry = {"n": len(registry) + 1, "chunk_id": hit["id"],
+                     "title": hit["title"], "source": hit["source"]}
+            registry[hit["id"]] = entry
+        blocks.append(f"[{entry['n']}] {hit['title']} ({hit['source']})\n{hit['content']}")
     return "\n\n".join(blocks)
 
 
 @tool
-def retrieve_corpus(query: str) -> str:
+def retrieve_corpus(query: str, config: RunnableConfig) -> str:
     """Search the internal knowledge base for passages relevant to the query."""
     with connect() as conn:
         hits = retrieve(conn, query, k=AGENT_TOP_K, method=AGENT_METHOD)
-    return format_hits_for_deepagent(hits)
+    # `config` is injected by LangGraph (hidden from the model); thread_id keys the
+    # registry so numbering is stable and stream_deepagent can read back the sources.
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    registry = _registries.setdefault(thread_id, {}) if thread_id else None
+    return format_hits_for_deepagent(hits, registry)
 
 
 # Thin adapters over the web functions in web_search_agent.py, exposed to the
@@ -262,6 +286,15 @@ def _preview(content, limit: int = 600) -> str:
     return text[:limit] + "…" if len(text) > limit else text
 
 
+def _cited_corpus_sources(thread_id: str, answer: str) -> list[dict]:
+    """The corpus passages the answer actually cites, in [n] order. Reads the run's
+    registry retrieve_corpus filled in and keeps only the numbers present in the
+    answer text, so the reader sees exactly the sources behind the citations."""
+    registry = _registries.get(thread_id, {})
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
+    return sorted((s for s in registry.values() if s["n"] in cited), key=lambda s: s["n"])
+
+
 def stream_deepagent(question: str, thread_id: str):
     """Yield event dicts as the deep agent works: a `status` event per tool call
     (with `call_id`, `tool`, `label`) and a `result` event per tool result (the
@@ -269,6 +302,7 @@ def stream_deepagent(question: str, thread_id: str):
     result. Subagent steps stream too (via subgraphs). Terminated by one `answer`
     — or `error` if the run blew up. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}}
+    _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -313,9 +347,12 @@ def stream_deepagent(question: str, thread_id: str):
                 # Read the final answer from the typed response channel, not the chat.
                 answer = state.values["structured_response"].answer
                 span.update(output=answer, metadata={"thread_id": thread_id})
+                yield {"type": "sources", "sources": _cited_corpus_sources(thread_id, answer)}
                 yield {"type": "answer", "text": answer, "thread_id": thread_id}
         except Exception as e:
             yield {"type": "error", "message": str(e)}
+        finally:
+            _registries.pop(thread_id, None)
 
 
 if __name__ == "__main__":
