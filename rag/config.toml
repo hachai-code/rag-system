@@ -44,4 +44,4 @@ research_subagent_model = "z-ai/glm-4.7-flash"  # cheap, proven tool-caller (79.
 agent_top_k = 25            # chunks the retrieve_corpus tool hands the agent
 agent_method = "rerank"     # retriever funnel the tool uses (vector | hybrid | rerank)
 enable_hitl = false         # opt-in human approval gate before external research (POST /ask/agent/resume)
-research_budget = 40        # max web calls (search + fetch) per run, then the agent must answer
+research_budget = 40        # max web calls (search + fetch) per run, then the agent must answer; 0 = unlimited

@@ -24,6 +24,8 @@ export default function Home() {
   const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
   const [deepAgent, setDeepAgent] = useState(false);
+  // Max web calls the deep agent may make per question; 0 = unlimited (cap off).
+  const [researchBudget, setResearchBudget] = useState(40);
   const [steps, setSteps] = useState<Step[]>([]);
   const [corpusSources, setCorpusSources] = useState<CorpusSource[]>([]);
   const [submitted, setSubmitted] = useState("");
@@ -68,7 +70,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/ask/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, thread_id: threadId }),
+        body: JSON.stringify({ question, thread_id: threadId, research_budget: researchBudget }),
       });
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
@@ -195,6 +197,21 @@ export default function Home() {
           {format === "prose" ? "Switch to claims + citations" : "Switch to prose"}
         </button>
           </>
+        )}
+        {deepAgent && (
+          <label
+            title="web calls the deep agent may make per question (0 = unlimited)"
+            className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
+          >
+            <span className="font-mono text-xs uppercase tracking-wide text-gray-500">web calls</span>
+            <input
+              type="number"
+              min={0}
+              value={researchBudget}
+              onChange={(e) => setResearchBudget(Number(e.target.value))}
+              className="w-12 rounded-full bg-white py-0.5 text-center font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+            />
+          </label>
         )}
         <button
           onClick={() => setDeepAgent((v) => !v)}

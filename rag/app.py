@@ -209,6 +209,8 @@ class DeepAgentRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
     # The research thread this run belongs to; keys the durable state (Phase 2+).
     thread_id: Annotated[str, Field(min_length=1)]
+    # Max web calls for this run; 0 = unlimited. None falls back to config.
+    research_budget: Annotated[int | None, Field(ge=0)] = None
 
 
 class DeepAgentResponse(BaseModel):
@@ -234,7 +236,7 @@ class ResumeRequest(BaseModel):
 @app.post("/ask/agent")
 @limiter.limit(RATE_LIMIT)
 def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse | AwaitingApproval:
-    result = run_deepagent(body.question, body.thread_id)
+    result = run_deepagent(body.question, body.thread_id, body.research_budget)
     if result["status"] == "awaiting_approval":
         return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
     return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
@@ -259,7 +261,7 @@ def resume_deepagent_endpoint(
 @limiter.limit(RATE_LIMIT)
 def ask_deepagent_stream(request: Request, body: DeepAgentRequest) -> StreamingResponse:
     def events():
-        for event in stream_deepagent(body.question, body.thread_id):
+        for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

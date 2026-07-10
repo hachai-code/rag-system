@@ -176,11 +176,14 @@ def retrieve_corpus(query: str, config: RunnableConfig) -> str:
 # at the start of each run and read via the config LangGraph injects into the tools.
 # It caps a flailing research subagent (which can otherwise fetch dozens of dead URLs),
 # bounding cost and the number of upstream calls that could hit a transient error.
+# The budget defaults to RESEARCH_BUDGET but the caller can override it per run
+# (_budgets); 0 means unlimited — the cap is off.
 # ponytail: module dict, one active run per thread_id (same as the checkpointer assumes).
 _web_calls: dict[str, int] = {}
+_budgets: dict[str, int] = {}
 _BUDGET_MSG = (
-    f"Research budget reached ({RESEARCH_BUDGET} web calls). Do not search or fetch "
-    "further — write the final answer now from the findings you already have."
+    "Research budget reached. Do not search or fetch further — write the final "
+    "answer now from the findings you already have."
 )
 
 
@@ -189,8 +192,11 @@ def _over_research_budget(config: RunnableConfig) -> bool:
     thread_id = config.get("configurable", {}).get("thread_id", "")
     if not thread_id:
         return False
+    budget = _budgets.get(thread_id, RESEARCH_BUDGET)
+    if budget <= 0:  # 0 = unlimited
+        return False
     _web_calls[thread_id] = _web_calls.get(thread_id, 0) + 1
-    return _web_calls[thread_id] > RESEARCH_BUDGET
+    return _web_calls[thread_id] > budget
 
 
 # Thin adapters over the web functions in web_search_agent.py, exposed to the
@@ -280,14 +286,16 @@ def _pending_tool_calls(interrupts) -> list[dict]:
     return pending
 
 
-def run_deepagent(question: str, thread_id: str) -> dict:
+def run_deepagent(question: str, thread_id: str, research_budget: int | None = None) -> dict:
     """Answer the question with the deep agent, traced as one Langfuse span.
 
+    `research_budget` caps web calls for this run (0 = unlimited); defaults to config.
     Returns `{"status": "done", "answer", "thread_id"}`, or — when the HITL gate
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     _web_calls[thread_id] = 0
+    _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -357,15 +365,17 @@ def _cited_corpus_sources(thread_id: str, answer: str) -> list[dict]:
     return sorted((s for s in registry.values() if s["n"] in cited), key=lambda s: s["n"])
 
 
-def stream_deepagent(question: str, thread_id: str):
+def stream_deepagent(question: str, thread_id: str, research_budget: int | None = None):
     """Yield event dicts as the deep agent works: a `status` event per tool call
     (with `call_id`, `tool`, `label`) and a `result` event per tool result (the
     preview, correlated by `call_id`), so the UI can show each step's call and its
     result. Subagent steps stream too (via subgraphs). Terminated by one `answer`
-    — or `error` if the run blew up. Mirrors stream_agent()."""
+    — or `error` if the run blew up. `research_budget` caps web calls (0 = unlimited);
+    defaults to config. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     _web_calls[thread_id] = 0  # fresh research budget for this run
+    _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -417,6 +427,7 @@ def stream_deepagent(question: str, thread_id: str):
         finally:
             _registries.pop(thread_id, None)
             _web_calls.pop(thread_id, None)
+            _budgets.pop(thread_id, None)
 
 
 if __name__ == "__main__":

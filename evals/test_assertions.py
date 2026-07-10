@@ -192,14 +192,19 @@ def test_format_hits_registry_keeps_stable_numbers():
 def test_over_research_budget_caps_web_calls():
     """The web tools charge one call each against a per-run budget keyed by thread_id;
     once the budget is spent the tool is told to stop. No thread_id means no cap."""
-    from rag.query.deepagent import RESEARCH_BUDGET, _over_research_budget, _web_calls
+    from rag.query.deepagent import RESEARCH_BUDGET, _budgets, _over_research_budget, _web_calls
 
     cfg = {"configurable": {"thread_id": "t-budget"}}
     _web_calls["t-budget"] = RESEARCH_BUDGET - 1
     assert _over_research_budget(cfg) is False  # this call spends exactly the budget
     assert _over_research_budget(cfg) is True  # one past the budget → stop
     assert _over_research_budget({"configurable": {}}) is False  # untracked run, no cap
+
+    # A per-run budget of 0 turns the cap off — the tool never gets told to stop.
+    _budgets["t-budget"] = 0
+    assert _over_research_budget(cfg) is False
     _web_calls.pop("t-budget", None)
+    _budgets.pop("t-budget", None)
 
 
 def test_step_label_summarizes_each_tool_call():
