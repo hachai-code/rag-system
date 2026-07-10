@@ -27,6 +27,13 @@ export type StreamEvent =
   | { type: "text"; text: string }
   | ({ type: "citation" } & Citation);
 
+// Returned by POST /ask/agent: the deep agent's answer, citations inline in the
+// text. thread_id keys the durable research thread for multi-turn follow-ups.
+export interface DeepAgentResponse {
+  answer: string;
+  thread_id: string;
+}
+
 // Returned by GET /source/{chunk_id}: the cited chunk in its document context.
 export interface SourcePassage {
   title: string;

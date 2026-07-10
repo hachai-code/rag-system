@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Citation, SourcePassage, StreamEvent } from "@/lib/types";
+import type { Citation, DeepAgentResponse, SourcePassage, StreamEvent } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -15,6 +15,10 @@ export default function Home() {
   const [format, setFormat] = useState<"prose" | "claims">("prose");
   const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
+  const [deepAgent, setDeepAgent] = useState(false);
+  // One research thread per browser session, so follow-ups reuse the durable
+  // notebook the deep agent builds up (multi-turn continuity).
+  const [threadId] = useState(() => crypto.randomUUID());
 
   function ask(e: React.FormEvent) {
     e.preventDefault();
@@ -34,6 +38,21 @@ export default function Home() {
     setOpenChip(null);
     setSource(null);
     setLoading(true);
+
+    // The deep agent answers from the corpus then enriches each point with web
+    // research. It's not streamed — one JSON response with citations inline in
+    // the answer text — so it takes noticeably longer than /ask/stream.
+    if (deepAgent) {
+      const res = await fetch(`${API_URL}/ask/agent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, thread_id: threadId }),
+      });
+      const data: DeepAgentResponse = await res.json();
+      setAnswer(data.answer);
+      setLoading(false);
+      return;
+    }
 
     const res = await fetch(`${API_URL}/ask/stream`, {
       method: "POST",
@@ -85,6 +104,8 @@ export default function Home() {
     <main className="mx-auto max-w-4xl px-4 py-10">
 
       <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
+        {!deepAgent && (
+          <>
         <label
           title="generation model"
           className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
@@ -118,6 +139,20 @@ export default function Home() {
           className="text-blue-600 hover:underline disabled:opacity-50"
         >
           {format === "prose" ? "Switch to claims + citations" : "Switch to prose"}
+        </button>
+          </>
+        )}
+        <button
+          onClick={() => setDeepAgent((v) => !v)}
+          disabled={loading}
+          title="Answer from the corpus, then enrich each point with external web research (slower)"
+          className={`rounded-full px-3 py-1 text-sm font-medium transition-colors disabled:opacity-50 ${
+            deepAgent
+              ? "bg-purple-600 text-white hover:bg-purple-700"
+              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }`}
+        >
+          Deep Agent {deepAgent ? "on" : "off"}
         </button>
       </div>
 
