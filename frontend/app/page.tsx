@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Citation, DeepAgentResponse, SourcePassage, StreamEvent } from "@/lib/types";
+import type { Citation, DeepAgentEvent, SourcePassage, StreamEvent } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -16,6 +16,7 @@ export default function Home() {
   const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
   const [deepAgent, setDeepAgent] = useState(false);
+  const [steps, setSteps] = useState<{ scope: string; text: string }[]>([]);
   // One research thread per browser session, so follow-ups reuse the durable
   // notebook the deep agent builds up (multi-turn continuity).
   const [threadId] = useState(() => crypto.randomUUID());
@@ -37,19 +38,42 @@ export default function Home() {
     setCitations([]);
     setOpenChip(null);
     setSource(null);
+    setSteps([]);
     setLoading(true);
 
     // The deep agent answers from the corpus then enriches each point with web
-    // research. It's not streamed — one JSON response with citations inline in
-    // the answer text — so it takes noticeably longer than /ask/stream.
+    // research. It streams its process — `status` steps as it retrieves, plans,
+    // and delegates to the research subagent — then one terminal `answer`.
     if (deepAgent) {
-      const res = await fetch(`${API_URL}/ask/agent`, {
+      const res = await fetch(`${API_URL}/ask/agent/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, thread_id: threadId }),
       });
-      const data: DeepAgentResponse = await res.json();
-      setAnswer(data.answer);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        done = chunk.done;
+        if (!chunk.value) continue;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const data = frame.replace(/^data: /, "");
+          if (!data) continue;
+          const event: DeepAgentEvent = JSON.parse(data);
+          if (event.type === "status") {
+            setSteps((prev) => [...prev, { scope: event.scope, text: event.text }]);
+          } else if (event.type === "answer") {
+            setAnswer(event.text);
+          } else {
+            setAnswer(`Error: ${event.message}`);
+          }
+        }
+      }
       setLoading(false);
       return;
     }
@@ -171,6 +195,17 @@ export default function Home() {
           {loading ? "…" : "Ask"}
         </button>
       </form>
+
+      {steps.length > 0 && (
+        <ol className="mb-6 space-y-1 border-l-2 border-gray-200 pl-4 text-sm text-gray-500">
+          {steps.map((s, i) => (
+            <li key={i} className={s.scope === "research" ? "pl-4 text-gray-400" : ""}>
+              {loading && i === steps.length - 1 ? "▸ " : "· "}
+              {s.text}
+            </li>
+          ))}
+        </ol>
+      )}
 
       {answer && (
         <article className="mb-8 whitespace-pre-wrap leading-relaxed">

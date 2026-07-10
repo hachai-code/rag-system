@@ -31,7 +31,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
-from .query.deepagent import run_deepagent
+from .query.deepagent import run_deepagent, stream_deepagent
 from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
@@ -223,6 +223,18 @@ class DeepAgentResponse(BaseModel):
 def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse:
     result = run_deepagent(body.question, body.thread_id)
     return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
+
+
+# SSE: `status` events stream in as the deep agent retrieves, plans, and delegates
+# web research (subagent steps included), terminated by one `answer` (or `error`).
+@app.post("/ask/agent/stream")
+@limiter.limit(RATE_LIMIT)
+def ask_deepagent_stream(request: Request, body: DeepAgentRequest) -> StreamingResponse:
+    def events():
+        for event in stream_deepagent(body.question, body.thread_id):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 # The chunk a citation points at, reconstructed in its place for the frontend.

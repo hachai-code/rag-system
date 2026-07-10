@@ -156,6 +156,59 @@ def run_deepagent(question: str, thread_id: str) -> dict:
     return {"answer": answer, "thread_id": thread_id}
 
 
+def _describe_step(msg):
+    """Turn one streamed AI message's tool calls into human-readable status text.
+    Yields nothing for non-AI messages (tool results, etc.)."""
+    if getattr(msg, "type", None) != "ai":
+        return
+    for call in msg.tool_calls or []:
+        name, args = call.get("name"), call.get("args") or {}
+        if name == "retrieve_corpus":
+            yield f"Searching the corpus for “{args.get('query', '')}”"
+        elif name == "task":
+            desc = " ".join(args.get("description", "").split())
+            yield f"Delegating research: {desc[:100]}…" if len(desc) > 100 else f"Delegating research: {desc}"
+        elif name == "web_search":
+            yield f"Web search: “{args.get('query', '')}”"
+        elif name == "fetch_page":
+            yield f"Reading {args.get('url', '')}"
+        elif name == "write_todos":
+            yield "Planning the research"
+        else:
+            yield name
+
+
+def stream_deepagent(question: str, thread_id: str):
+    """Yield event dicts as the deep agent works: `status` steps as it retrieves,
+    plans, and delegates web research (subagent steps included via subgraphs), then
+    a terminal `answer` — or `error` if the run blew up. Mirrors stream_agent()."""
+    config = {"configurable": {"thread_id": thread_id}}
+    answer = ""
+    with get_client().start_as_current_observation(
+        as_type="span", name="rag-agent", input=question
+    ) as span:
+        try:
+            for namespace, update in AGENT.stream(
+                {"messages": [{"role": "user", "content": question}]},
+                config,
+                stream_mode="updates",
+                subgraphs=True,
+            ):
+                scope = "research" if namespace else "main"
+                for delta in (update or {}).values():
+                    messages = delta.get("messages", []) if isinstance(delta, dict) else []
+                    for msg in messages:
+                        for text in _describe_step(msg):
+                            yield {"type": "status", "scope": scope, "text": text}
+                        # The final answer is the top-level AI message with no tool calls.
+                        if not namespace and getattr(msg, "type", None) == "ai" and not msg.tool_calls:
+                            answer = msg.content
+            span.update(output=answer, metadata={"thread_id": thread_id})
+            yield {"type": "answer", "text": answer, "thread_id": thread_id}
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+
+
 if __name__ == "__main__":
     import sys
 
