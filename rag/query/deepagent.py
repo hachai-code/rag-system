@@ -24,6 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
+from langfuse.langchain import CallbackHandler
 from pydantic import BaseModel, Field
 from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -80,12 +81,15 @@ _OPENROUTER_PROVIDER = {
     "provider": {"require_parameters": True, "ignore": ["atlas-cloud"]}
 }
 
+# stream_usage=True so token usage rides the final streaming chunk (OpenRouter always
+# returns it there) — otherwise the streamed run reports zero tokens to Langfuse.
 model = ChatOpenAI(
     model=AGENT_MODEL,
     base_url=OPENROUTER_BASE_URL,
     api_key=environ["OPENROUTER_API_KEY"],
     temperature=0,
     extra_body=_OPENROUTER_PROVIDER,
+    stream_usage=True,
 )
 
 research_model = ChatOpenAI(
@@ -94,7 +98,14 @@ research_model = ChatOpenAI(
     api_key=environ["OPENROUTER_API_KEY"],
     temperature=0,
     extra_body=_OPENROUTER_PROVIDER,
+    stream_usage=True,
 )
+
+# One shared Langfuse handler, attached to each run's config so every LLM and tool
+# call in the LangGraph run (across its worker threads) nests under the request's
+# span, giving one trace per request with token usage. Reuses the singleton client,
+# so it's a no-op when Langfuse keys are unset.
+_langfuse_handler = CallbackHandler()
 
 
 # Per-run registries of corpus passages the agent has retrieved, keyed by thread_id:
@@ -226,7 +237,7 @@ def run_deepagent(question: str, thread_id: str) -> dict:
     Returns `{"status": "done", "answer", "thread_id"}`, or — when the HITL gate
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -245,7 +256,7 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     the run — from a separate, later request, even across a restart (the state lives
     in Postgres). `decision` is "approve" or "reject"; one decision is sent per pending
     tool call. Returns the same shapes as run_deepagent (it may pause again)."""
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
     decisions = [{"type": decision} for _ in pending]
     with get_client().start_as_current_observation(
@@ -301,7 +312,7 @@ def stream_deepagent(question: str, thread_id: str):
     preview, correlated by `call_id`), so the UI can show each step's call and its
     result. Subagent steps stream too (via subgraphs). Terminated by one `answer`
     — or `error` if the run blew up. Mirrors stream_agent()."""
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question

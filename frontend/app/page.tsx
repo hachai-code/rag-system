@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   Citation,
   CorpusSource,
@@ -24,9 +24,18 @@ export default function Home() {
   const [deepAgent, setDeepAgent] = useState(false);
   const [steps, setSteps] = useState<Step[]>([]);
   const [corpusSources, setCorpusSources] = useState<CorpusSource[]>([]);
+  const [submitted, setSubmitted] = useState("");
   // One research thread per browser session, so follow-ups reuse the durable
   // notebook the deep agent builds up (multi-turn continuity).
   const [threadId] = useState(() => crypto.randomUUID());
+
+  // Keep the newest agent step in view without growing the page: the trace is a
+  // fixed-height scroller that follows the tail as steps stream in.
+  const traceRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = traceRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [steps]);
 
   function ask(e: React.FormEvent) {
     e.preventDefault();
@@ -47,6 +56,7 @@ export default function Home() {
     setSource(null);
     setSteps([]);
     setCorpusSources([]);
+    setSubmitted(question.trim());
     setLoading(true);
 
     // The deep agent answers from the corpus then enriches each point with web
@@ -214,12 +224,26 @@ export default function Home() {
         </button>
       </form>
 
-      {steps.length > 0 && (
-        <div className="mb-6 space-y-1.5 border-l-2 border-gray-200 pl-4">
-          {steps.map((s, i) => (
-            <TraceStep key={s.callId || i} step={s} active={loading && i === steps.length - 1} />
-          ))}
+      {submitted && (
+        <div className="mb-6 flex justify-end">
+          <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-gray-100 px-4 py-2 text-gray-800">
+            {submitted}
+          </div>
         </div>
+      )}
+
+      {steps.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 text-sm font-medium text-gray-500">Reasoning</h2>
+          <div
+            ref={traceRef}
+            className="max-h-72 space-y-1.5 overflow-y-auto border-l-2 border-gray-200 pl-4"
+          >
+            {steps.map((s, i) => (
+              <TraceStep key={s.callId || i} step={s} active={loading && i === steps.length - 1} />
+            ))}
+          </div>
+        </section>
       )}
 
       {answer && (
