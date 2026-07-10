@@ -25,6 +25,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
+from langfuse.openai import OpenAI
 from pydantic import BaseModel, Field
 from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -35,13 +36,20 @@ from ..config import CONFIG
 from ..db import DB_URL, connect
 from .answer import OPENROUTER_BASE_URL
 from .retrieve import retrieve
-from .web_search_agent import fetch_page as _fetch_page, search_web as _search_web
+from .web_search_agent import (
+    DISTILL_OVER_TOKENS,
+    _distill,
+    _encoder,
+    fetch_page as _fetch_page,
+    search_web as _search_web,
+)
 
 AGENT_MODEL = CONFIG.agent_model
 RESEARCH_SUBAGENT_MODEL = CONFIG.research_subagent_model
 AGENT_TOP_K = CONFIG.agent_top_k
 AGENT_METHOD = CONFIG.agent_method
 ENABLE_HITL = CONFIG.enable_hitl
+RESEARCH_BUDGET = CONFIG.research_budget
 
 AGENT_PROMPT = """You answer questions about the innerdance corpus, enriching each \
 point with external web research.
@@ -62,7 +70,10 @@ If the corpus does not cover the question, say so plainly instead of guessing.""
 VALIDATION_PROMPT = """You research one specific point drawn from the innerdance \
 corpus. Use web_search and fetch_page to find outside sources that corroborate, \
 elaborate, or challenge it. Report what you found in a few sentences, citing the URLs \
-you drew on. If nothing relevant turns up, say so."""
+you drew on. If nothing relevant turns up, say so.
+
+Be economical: a couple of searches and a few page reads are enough. If a URL fails \
+or errors, move on — do not retry variants of the same URL."""
 
 
 # The agent's final answer is delivered through this typed field, not scraped from
@@ -83,6 +94,8 @@ _OPENROUTER_PROVIDER = {
 
 # stream_usage=True so token usage rides the final streaming chunk (OpenRouter always
 # returns it there) — otherwise the streamed run reports zero tokens to Langfuse.
+# max_retries=6 (over the SDK's default 2) so a transient OpenRouter 5xx on any one of
+# the run's ~100+ calls is retried (exponential backoff) instead of aborting the whole run.
 model = ChatOpenAI(
     model=AGENT_MODEL,
     base_url=OPENROUTER_BASE_URL,
@@ -90,6 +103,7 @@ model = ChatOpenAI(
     temperature=0,
     extra_body=_OPENROUTER_PROVIDER,
     stream_usage=True,
+    max_retries=6,
 )
 
 research_model = ChatOpenAI(
@@ -99,7 +113,13 @@ research_model = ChatOpenAI(
     temperature=0,
     extra_body=_OPENROUTER_PROVIDER,
     stream_usage=True,
+    max_retries=6,
 )
+
+# Raw Langfuse-traced OpenAI client for _distill (which calls chat.completions
+# directly, not a LangChain model). Distillation itself runs on the cheap flash
+# model wired inside _distill — not the subagent's model.
+_distill_client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=environ["OPENROUTER_API_KEY"])
 
 # One shared Langfuse handler, attached to each run's config so every LLM and tool
 # call in the LangGraph run (across its worker threads) nests under the request's
@@ -152,11 +172,34 @@ def retrieve_corpus(query: str, config: RunnableConfig) -> str:
     return format_hits_for_deepagent(hits, registry)
 
 
+# Per-run count of web tool calls (search + fetch), keyed by thread_id — seeded at 0
+# at the start of each run and read via the config LangGraph injects into the tools.
+# It caps a flailing research subagent (which can otherwise fetch dozens of dead URLs),
+# bounding cost and the number of upstream calls that could hit a transient error.
+# ponytail: module dict, one active run per thread_id (same as the checkpointer assumes).
+_web_calls: dict[str, int] = {}
+_BUDGET_MSG = (
+    f"Research budget reached ({RESEARCH_BUDGET} web calls). Do not search or fetch "
+    "further — write the final answer now from the findings you already have."
+)
+
+
+def _over_research_budget(config: RunnableConfig) -> bool:
+    """Charge one web call against this run's budget; return True once it's spent."""
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    if not thread_id:
+        return False
+    _web_calls[thread_id] = _web_calls.get(thread_id, 0) + 1
+    return _web_calls[thread_id] > RESEARCH_BUDGET
+
+
 # Thin adapters over the web functions in web_search_agent.py, exposed to the
 # research subagent as LangChain tools — the same seam the naked web agent uses.
 @tool
-def web_search(query: str) -> str:
+def web_search(query: str, config: RunnableConfig) -> str:
     """Search the web; returns top results as title/url/snippet."""
+    if _over_research_budget(config):
+        return _BUDGET_MSG
     try:
         results = _search_web(query)
         return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results) or "No results."
@@ -165,12 +208,18 @@ def web_search(query: str) -> str:
 
 
 @tool
-def fetch_page(url: str) -> str:
-    """Fetch a URL and return its main text, boilerplate stripped."""
+def fetch_page(url: str, focus: str, config: RunnableConfig) -> str:
+    """Fetch a URL and return its main text. `focus` is the point you're researching;
+    long pages are distilled down to just the parts relevant to it."""
+    if _over_research_budget(config):
+        return _BUDGET_MSG
     try:
-        return _fetch_page(url)
+        page = _fetch_page(url)
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
+    if len(_encoder.encode(page)) > DISTILL_OVER_TOKENS:
+        page, _ = _distill(_distill_client, focus, page)
+    return page
 
 
 # Context-isolated: its web crawl transcript stays in the subagent thread and
@@ -238,6 +287,7 @@ def run_deepagent(question: str, thread_id: str) -> dict:
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
+    _web_calls[thread_id] = 0
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -257,6 +307,7 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     in Postgres). `decision` is "approve" or "reject"; one decision is sent per pending
     tool call. Returns the same shapes as run_deepagent (it may pause again)."""
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
+    _web_calls[thread_id] = 0
     pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
     decisions = [{"type": decision} for _ in pending]
     with get_client().start_as_current_observation(
@@ -314,6 +365,7 @@ def stream_deepagent(question: str, thread_id: str):
     — or `error` if the run blew up. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
+    _web_calls[thread_id] = 0  # fresh research budget for this run
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -364,6 +416,7 @@ def stream_deepagent(question: str, thread_id: str):
             yield {"type": "error", "message": str(e)}
         finally:
             _registries.pop(thread_id, None)
+            _web_calls.pop(thread_id, None)
 
 
 if __name__ == "__main__":
