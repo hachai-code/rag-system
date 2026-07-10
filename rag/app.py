@@ -31,7 +31,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
-from .query.deepagent import run_deepagent, stream_deepagent
+from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
@@ -216,12 +216,40 @@ class DeepAgentResponse(BaseModel):
     thread_id: str
 
 
+# Returned when the HITL gate (config: enable_hitl) pauses the run before external
+# research. A later POST /ask/agent/resume on the same thread_id continues it.
+class AwaitingApproval(BaseModel):
+    status: Literal["awaiting_approval"] = "awaiting_approval"
+    thread_id: str
+    pending: list[dict[str, str]]
+
+
+class ResumeRequest(BaseModel):
+    thread_id: Annotated[str, Field(min_length=1)]
+    decision: Literal["approve", "reject"]
+
+
 # The Deep Agent path: answers from the corpus via its own tool-driven control
 # flow. The run is traced (span lives in deepagent.run_deepagent).
 @app.post("/ask/agent")
 @limiter.limit(RATE_LIMIT)
-def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse:
+def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse | AwaitingApproval:
     result = run_deepagent(body.question, body.thread_id)
+    if result["status"] == "awaiting_approval":
+        return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
+    return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
+
+
+# Resume a paused thread: approve or reject the external-research gate. Works from a
+# separate request even after a restart (state is durable in Postgres).
+@app.post("/ask/agent/resume")
+@limiter.limit(RATE_LIMIT)
+def resume_deepagent_endpoint(
+    request: Request, body: ResumeRequest
+) -> DeepAgentResponse | AwaitingApproval:
+    result = resume_deepagent(body.thread_id, body.decision)
+    if result["status"] == "awaiting_approval":
+        return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
     return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
 
 

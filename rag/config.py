@@ -38,6 +38,7 @@ class Config:
     research_subagent_model: str
     agent_top_k: int
     agent_method: str
+    enable_hitl: bool
 
 
 def _load() -> Config:

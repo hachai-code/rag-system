@@ -23,6 +23,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
 from pydantic import BaseModel, Field
+from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg.rows import dict_row
@@ -37,6 +38,7 @@ AGENT_MODEL = CONFIG.agent_model
 RESEARCH_SUBAGENT_MODEL = CONFIG.research_subagent_model
 AGENT_TOP_K = CONFIG.agent_top_k
 AGENT_METHOD = CONFIG.agent_method
+ENABLE_HITL = CONFIG.enable_hitl
 
 AGENT_PROMPT = """You answer questions about the innerdance corpus, enriching each \
 point with external web research.
@@ -161,6 +163,14 @@ _serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "De
 _checkpointer = PostgresSaver(_conn, serde=_serde)
 _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 
+# The research subagent is dispatched through deepagents' built-in `task` tool, so
+# to pause before external research we gate on `task` (not the subagent's name).
+# Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
+# strand the streaming happy path at the interrupt.
+_interrupt_on = (
+    {"task": {"allowed_decisions": ["approve", "reject"]}} if ENABLE_HITL else None
+)
+
 AGENT = create_deep_agent(
     model=model,
     tools=[retrieve_corpus],
@@ -168,19 +178,66 @@ AGENT = create_deep_agent(
     subagents=[research_subagent],
     checkpointer=_checkpointer,
     response_format=ToolStrategy(DeepAnswer),
+    interrupt_on=_interrupt_on,
 )
 
 
+def _pending_tool_calls(interrupts) -> list[dict]:
+    """Flatten a batch of HITL interrupts into a JSON-serializable summary of the
+    tool calls awaiting approval. A single gate can batch several `task` calls (the
+    agent may delegate multiple research points at once), so this returns one entry
+    per pending call — the count also drives how many decisions a resume must send."""
+    pending = []
+    for interrupt in interrupts:
+        for action in interrupt.value["action_requests"]:
+            args = action.get("args") or {}
+            summary = args.get("description") or args.get("query") or ""
+            pending.append({"tool": action["name"], "summary": " ".join(str(summary).split())[:200]})
+    return pending
+
+
 def run_deepagent(question: str, thread_id: str) -> dict:
-    """Answer the question with the deep agent, traced as one Langfuse span."""
+    """Answer the question with the deep agent, traced as one Langfuse span.
+
+    Returns `{"status": "done", "answer", "thread_id"}`, or — when the HITL gate
+    pauses before external research — `{"status": "awaiting_approval", "thread_id",
+    "pending"}`. Resume a paused thread with resume_deepagent()."""
     config = {"configurable": {"thread_id": thread_id}}
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
         result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
+        if result.get("__interrupt__"):
+            pending = _pending_tool_calls(result["__interrupt__"])
+            span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
+            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": pending}
         answer = result["structured_response"].answer
         span.update(output=answer, metadata={"thread_id": thread_id})
-    return {"answer": answer, "thread_id": thread_id}
+    return {"status": "done", "answer": answer, "thread_id": thread_id}
+
+
+def resume_deepagent(thread_id: str, decision: str) -> dict:
+    """Approve or reject the paused external-research gate on `thread_id` and continue
+    the run — from a separate, later request, even across a restart (the state lives
+    in Postgres). `decision` is "approve" or "reject"; one decision is sent per pending
+    tool call. Returns the same shapes as run_deepagent (it may pause again)."""
+    config = {"configurable": {"thread_id": thread_id}}
+    pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
+    decisions = [{"type": decision} for _ in pending]
+    with get_client().start_as_current_observation(
+        as_type="span", name="rag-agent-resume", input=decision
+    ) as span:
+        result = AGENT.invoke(Command(resume={"decisions": decisions}), config)
+        if result.get("__interrupt__"):
+            span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
+            return {
+                "status": "awaiting_approval",
+                "thread_id": thread_id,
+                "pending": _pending_tool_calls(result["__interrupt__"]),
+            }
+        answer = result["structured_response"].answer
+        span.update(output=answer, metadata={"thread_id": thread_id})
+    return {"status": "done", "answer": answer, "thread_id": thread_id}
 
 
 def _describe_step(msg):
@@ -226,10 +283,21 @@ def stream_deepagent(question: str, thread_id: str):
                     for msg in messages:
                         for text in _describe_step(msg):
                             yield {"type": "status", "scope": scope, "text": text}
-            # Read the final answer from the typed response channel, not the chat.
-            answer = AGENT.get_state(config).values["structured_response"].answer
-            span.update(output=answer, metadata={"thread_id": thread_id})
-            yield {"type": "answer", "text": answer, "thread_id": thread_id}
+            # The run either finished or paused at the HITL gate; the stream ends
+            # either way, so read the terminal state and emit the matching event.
+            state = AGENT.get_state(config)
+            if state.interrupts:
+                span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
+                yield {
+                    "type": "awaiting_approval",
+                    "thread_id": thread_id,
+                    "pending": _pending_tool_calls(state.interrupts),
+                }
+            else:
+                # Read the final answer from the typed response channel, not the chat.
+                answer = state.values["structured_response"].answer
+                span.update(output=answer, metadata={"thread_id": thread_id})
+                yield {"type": "answer", "text": answer, "thread_id": thread_id}
         except Exception as e:
             yield {"type": "error", "message": str(e)}
 
@@ -239,5 +307,9 @@ if __name__ == "__main__":
 
     question = sys.argv[1] if len(sys.argv) > 1 else "What is innerdance?"
     print(f"Q: {question}\n")
-    print(run_deepagent(question, thread_id="cli")["answer"])
+    result = run_deepagent(question, thread_id="cli")
+    if result["status"] == "awaiting_approval":
+        print(f"Awaiting approval before research: {result['pending']}")
+    else:
+        print(result["answer"])
     get_client().flush()

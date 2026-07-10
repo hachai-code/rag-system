@@ -43,3 +43,4 @@ agent_model = "deepseek/deepseek-v4-flash"
 research_subagent_model = "deepseek/deepseek-v4-flash"
 agent_top_k = 25            # chunks the retrieve_corpus tool hands the agent
 agent_method = "rerank"     # retriever funnel the tool uses (vector | hybrid | rerank)
+enable_hitl = false         # opt-in human approval gate before external research (POST /ask/agent/resume)
