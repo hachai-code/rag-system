@@ -97,14 +97,20 @@ def retrieve_corpus(query: str) -> str:
 @tool
 def web_search(query: str) -> str:
     """Search the web; returns top results as title/url/snippet."""
-    results = _search_web(query)
-    return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results) or "No results."
+    try:
+        results = _search_web(query)
+        return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results) or "No results."
+    except Exception as e:
+        return f"Tool error: {type(e).__name__}: {e}"
 
 
 @tool
 def fetch_page(url: str) -> str:
     """Fetch a URL and return its main text, boilerplate stripped."""
-    return _fetch_page(url)
+    try:
+        return _fetch_page(url)
+    except Exception as e:
+        return f"Tool error: {type(e).__name__}: {e}"
 
 
 # Context-isolated: its web crawl transcript stays in the subagent thread and
