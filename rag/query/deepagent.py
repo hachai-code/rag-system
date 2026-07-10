@@ -1,10 +1,13 @@
-"""The agentic /ask/agent path: a Deep Agent that answers from the corpus.
+"""The agentic /ask/agent path: a Deep Agent that answers from the corpus, then
+enriches each point with external web research.
 
 Unlike the deterministic /ask pipeline, the agent drives its own control flow —
 it decides when to search the corpus (via the retrieve_corpus tool) and answers
 from what it finds, using Deep Agents' built-in planning and virtual filesystem.
-The compiled agent is built once at module load (like GRAPH in
-web_search_graph_agent.py) and invoked per request inside a Langfuse span.
+It then delegates each substantive point to a context-isolated external-research
+subagent, so raw web crawl transcripts stay out of the main thread. The compiled
+agent is built once at module load (like GRAPH in web_search_graph_agent.py) and
+invoked per request inside a Langfuse span.
 
 Model wiring: the deep agent needs a LangChain chat model. We reach DeepSeek
 through OpenRouter (the same seam generation uses) via ChatOpenAI, reusing the
@@ -25,20 +28,42 @@ from ..config import CONFIG
 from ..db import DB_URL, connect
 from .answer import OPENROUTER_BASE_URL
 from .retrieve import retrieve
+from .web_search_agent import fetch_page as _fetch_page, search_web as _search_web
 
 AGENT_MODEL = CONFIG.agent_model
+RESEARCH_SUBAGENT_MODEL = CONFIG.research_subagent_model
 AGENT_TOP_K = CONFIG.agent_top_k
 AGENT_METHOD = CONFIG.agent_method
 
-AGENT_PROMPT = """You answer questions about the innerdance corpus.
+AGENT_PROMPT = """You answer questions about the innerdance corpus, enriching each \
+point with external web research.
 
-Search the internal knowledge base with the retrieve_corpus tool, then answer the \
-question grounded in the passages it returns. Cite the passages you drew on by their \
-bracketed number, e.g. [1], [2]. If the corpus does not cover the question, say so \
-plainly instead of guessing."""
+Work in this order:
+1. Search the internal knowledge base with the retrieve_corpus tool and draft an \
+answer grounded in the passages it returns. Cite passages by their bracketed number, \
+e.g. [1], [2].
+2. Pull out the substantive points your draft rests on. Delegate each one to the \
+external-research subagent (via the task tool) to corroborate or elaborate it with \
+outside sources, and save the subagent's findings to a file named for that point.
+3. Present each corpus point enriched with what the research turned up, citing both \
+the corpus passage [n] and the web URLs the subagent reported.
+
+If the corpus does not cover the question, say so plainly instead of guessing."""
+
+VALIDATION_PROMPT = """You research one specific point drawn from the innerdance \
+corpus. Use web_search and fetch_page to find outside sources that corroborate, \
+elaborate, or challenge it. Report what you found in a few sentences, citing the URLs \
+you drew on. If nothing relevant turns up, say so."""
 
 model = ChatOpenAI(
     model=AGENT_MODEL,
+    base_url=OPENROUTER_BASE_URL,
+    api_key=environ["OPENROUTER_API_KEY"],
+    temperature=0,
+)
+
+research_model = ChatOpenAI(
+    model=RESEARCH_SUBAGENT_MODEL,
     base_url=OPENROUTER_BASE_URL,
     api_key=environ["OPENROUTER_API_KEY"],
     temperature=0,
@@ -67,6 +92,33 @@ def retrieve_corpus(query: str) -> str:
     return format_hits_for_deepagent(hits)
 
 
+# Thin adapters over the web functions in web_search_agent.py, exposed to the
+# research subagent as LangChain tools — the same seam the naked web agent uses.
+@tool
+def web_search(query: str) -> str:
+    """Search the web; returns top results as title/url/snippet."""
+    results = _search_web(query)
+    return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results) or "No results."
+
+
+@tool
+def fetch_page(url: str) -> str:
+    """Fetch a URL and return its main text, boilerplate stripped."""
+    return _fetch_page(url)
+
+
+# Context-isolated: its web crawl transcript stays in the subagent thread and
+# only its final findings return to the main agent (via the task tool). Given its
+# own cheaper model through the "model" key, verified against deepagents 0.6.x.
+research_subagent = {
+    "name": "external-research",
+    "description": "Search the web to corroborate or elaborate a single corpus point.",
+    "system_prompt": VALIDATION_PROMPT,
+    "tools": [web_search, fetch_page],
+    "model": research_model,
+}
+
+
 # A single long-lived connection held for the process lifetime: the agent is
 # compiled once at import, so PostgresSaver.from_conn_string (a context manager
 # that closes on exit) won't do — we open the connection ourselves and keep it.
@@ -81,6 +133,7 @@ AGENT = create_deep_agent(
     model=model,
     tools=[retrieve_corpus],
     system_prompt=AGENT_PROMPT,
+    subagents=[research_subagent],
     checkpointer=_checkpointer,
 )
 
