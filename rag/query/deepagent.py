@@ -18,10 +18,13 @@ from os import environ
 
 import psycopg
 from deepagents import create_deep_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
+from pydantic import BaseModel, Field
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg.rows import dict_row
 
 from ..config import CONFIG
@@ -45,8 +48,9 @@ e.g. [1], [2].
 2. Pull out the substantive points your draft rests on. Delegate each one to the \
 external-research subagent (via the task tool) to corroborate or elaborate it with \
 outside sources, and save the subagent's findings to a file named for that point.
-3. Present each corpus point enriched with what the research turned up, citing both \
-the corpus passage [n] and the web URLs the subagent reported.
+3. Return the complete answer: every corpus point enriched with what the research \
+turned up, written out in full and citing both the corpus passage [n] and the web \
+URLs the subagent reported.
 
 If the corpus does not cover the question, say so plainly instead of guessing."""
 
@@ -55,11 +59,29 @@ corpus. Use web_search and fetch_page to find outside sources that corroborate, 
 elaborate, or challenge it. Report what you found in a few sentences, citing the URLs \
 you drew on. If nothing relevant turns up, say so."""
 
+
+# The agent's final answer is delivered through this typed field, not scraped from
+# the last chat message — so bookkeeping (write_todos) and closing remarks can't
+# displace it. Read as result["structured_response"].answer. ToolStrategy delivers
+# it via a tool call (universally supported) rather than native json-schema, which
+# some OpenRouter upstream providers reject.
+class DeepAnswer(BaseModel):
+    answer: str = Field(description="The complete answer, in full, with corpus [n] and web citations.")
+
+# Route only to OpenRouter providers that support every parameter in our request
+# (tool calling + structured output). Without this, when the preferred providers
+# are rate-limited OpenRouter falls back to one that rejects the tool-heavy agent
+# request with a 400 "invalid request params".
+_OPENROUTER_PROVIDER = {
+    "provider": {"require_parameters": True, "ignore": ["atlas-cloud"]}
+}
+
 model = ChatOpenAI(
     model=AGENT_MODEL,
     base_url=OPENROUTER_BASE_URL,
     api_key=environ["OPENROUTER_API_KEY"],
     temperature=0,
+    extra_body=_OPENROUTER_PROVIDER,
 )
 
 research_model = ChatOpenAI(
@@ -67,6 +89,7 @@ research_model = ChatOpenAI(
     base_url=OPENROUTER_BASE_URL,
     api_key=environ["OPENROUTER_API_KEY"],
     temperature=0,
+    extra_body=_OPENROUTER_PROVIDER,
 )
 
 
@@ -132,7 +155,10 @@ research_subagent = {
 _conn = psycopg.connect(
     DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
 )
-_checkpointer = PostgresSaver(_conn)
+# Allowlist DeepAnswer so the checkpointed structured_response stays deserializable
+# even under LANGGRAPH_STRICT_MSGPACK — otherwise resuming a thread would break.
+_serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "DeepAnswer")])
+_checkpointer = PostgresSaver(_conn, serde=_serde)
 _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 
 AGENT = create_deep_agent(
@@ -141,6 +167,7 @@ AGENT = create_deep_agent(
     system_prompt=AGENT_PROMPT,
     subagents=[research_subagent],
     checkpointer=_checkpointer,
+    response_format=ToolStrategy(DeepAnswer),
 )
 
 
@@ -151,7 +178,7 @@ def run_deepagent(question: str, thread_id: str) -> dict:
         as_type="span", name="rag-agent", input=question
     ) as span:
         result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
-        answer = result["messages"][-1].content
+        answer = result["structured_response"].answer
         span.update(output=answer, metadata={"thread_id": thread_id})
     return {"answer": answer, "thread_id": thread_id}
 
@@ -183,7 +210,6 @@ def stream_deepagent(question: str, thread_id: str):
     plans, and delegates web research (subagent steps included via subgraphs), then
     a terminal `answer` — or `error` if the run blew up. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}}
-    answer = ""
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -200,9 +226,8 @@ def stream_deepagent(question: str, thread_id: str):
                     for msg in messages:
                         for text in _describe_step(msg):
                             yield {"type": "status", "scope": scope, "text": text}
-                        # The final answer is the top-level AI message with no tool calls.
-                        if not namespace and getattr(msg, "type", None) == "ai" and not msg.tool_calls:
-                            answer = msg.content
+            # Read the final answer from the typed response channel, not the chat.
+            answer = AGENT.get_state(config).values["structured_response"].answer
             span.update(output=answer, metadata={"thread_id": thread_id})
             yield {"type": "answer", "text": answer, "thread_id": thread_id}
         except Exception as e:
