@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   Citation,
   CorpusSource,
@@ -246,11 +248,19 @@ export default function Home() {
         </section>
       )}
 
-      {answer && (
-        <article className="mb-8 whitespace-pre-wrap leading-relaxed">
-          <AnswerBody answer={answer} citations={citations} openSource={openSource} />
-        </article>
-      )}
+      {answer &&
+        (deepAgent ? (
+          // The deep agent answers in Markdown (headings, quotes, tables, links);
+          // render it as such. The /ask path stays on AnswerBody for its inline,
+          // span-anchored citation markers, which Markdown can't express.
+          <article className="prose prose-neutral mb-8 max-w-none">
+            <Markdown remarkPlugins={[remarkGfm]}>{answer}</Markdown>
+          </article>
+        ) : (
+          <article className="mb-8 whitespace-pre-wrap leading-relaxed">
+            <AnswerBody answer={answer} citations={citations} openSource={openSource} />
+          </article>
+        ))}
 
       {deepAgent && corpusSources.length > 0 && <CorpusSources sources={corpusSources} />}
 
