@@ -39,6 +39,7 @@ class Config:
     agent_top_k: int
     agent_method: str
     enable_hitl: bool
+    research_budget: int
 
 
 def _load() -> Config:
