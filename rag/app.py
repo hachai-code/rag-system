@@ -31,6 +31,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
+from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
@@ -199,6 +200,68 @@ class AgentRequest(BaseModel):
 def agent_stream(request: Request, body: AgentRequest) -> StreamingResponse:
     def events():
         for event in stream_agent(body.question):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+class DeepAgentRequest(BaseModel):
+    question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
+    # The research thread this run belongs to; keys the durable state (Phase 2+).
+    thread_id: Annotated[str, Field(min_length=1)]
+    # Max web calls for this run; 0 = unlimited. None falls back to config.
+    research_budget: Annotated[int | None, Field(ge=0)] = None
+
+
+class DeepAgentResponse(BaseModel):
+    answer: str
+    thread_id: str
+
+
+# Returned when the HITL gate (config: enable_hitl) pauses the run before external
+# research. A later POST /ask/agent/resume on the same thread_id continues it.
+class AwaitingApproval(BaseModel):
+    status: Literal["awaiting_approval"] = "awaiting_approval"
+    thread_id: str
+    pending: list[dict[str, str]]
+
+
+class ResumeRequest(BaseModel):
+    thread_id: Annotated[str, Field(min_length=1)]
+    decision: Literal["approve", "reject"]
+
+
+# The Deep Agent path: answers from the corpus via its own tool-driven control
+# flow. The run is traced (span lives in deepagent.run_deepagent).
+@app.post("/ask/agent")
+@limiter.limit(RATE_LIMIT)
+def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse | AwaitingApproval:
+    result = run_deepagent(body.question, body.thread_id, body.research_budget)
+    if result["status"] == "awaiting_approval":
+        return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
+    return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
+
+
+# Resume a paused thread: approve or reject the external-research gate. Works from a
+# separate request even after a restart (state is durable in Postgres).
+@app.post("/ask/agent/resume")
+@limiter.limit(RATE_LIMIT)
+def resume_deepagent_endpoint(
+    request: Request, body: ResumeRequest
+) -> DeepAgentResponse | AwaitingApproval:
+    result = resume_deepagent(body.thread_id, body.decision)
+    if result["status"] == "awaiting_approval":
+        return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
+    return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
+
+
+# SSE: `status` events stream in as the deep agent retrieves, plans, and delegates
+# web research (subagent steps included), terminated by one `answer` (or `error`).
+@app.post("/ask/agent/stream")
+@limiter.limit(RATE_LIMIT)
+def ask_deepagent_stream(request: Request, body: DeepAgentRequest) -> StreamingResponse:
+    def events():
+        for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

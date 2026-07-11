@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from rag.app import AskRequest, _no_relevant_hits
+from rag.query.deepagent import _step_label, format_hits_for_deepagent
 from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
@@ -164,6 +165,55 @@ def test_rerank_empty_candidates_returns_empty():
     (HyPE not populated), the candidate list is empty and rerank must no-op rather than
     call the cross-encoder on nothing."""
     assert _rerank("any question", [], k=5) == []
+
+
+def test_format_hits_for_deepagent_is_numbered_and_citable():
+    """The retrieve_corpus tool renders hits as numbered, cite-able passages: every
+    hit appears with a 1-based index the agent can cite by, plus its title and text."""
+    text = format_hits_for_deepagent(HITS)
+    for i, hit in enumerate(HITS, 1):
+        assert f"[{i}]" in text
+        assert hit["title"] in text
+        assert hit["content"] in text
+
+
+def test_format_hits_registry_keeps_stable_numbers():
+    """With a shared registry, each chunk keeps a stable [n] across retrievals: a chunk
+    seen earlier reuses its number instead of renumbering to [1], and the registry
+    records the chunk_id so the frontend can open the passage."""
+    registry: dict = {}
+    first = format_hits_for_deepagent(HITS, registry)
+    assert "[1]" in first and "[2]" in first
+    again = format_hits_for_deepagent([HITS[1]], registry)  # re-retrieve the 2nd hit alone
+    assert "[2]" in again and "[1]" not in again
+    assert registry[HITS[1]["id"]]["chunk_id"] == HITS[1]["id"]
+
+
+def test_over_research_budget_caps_web_calls():
+    """The web tools charge one call each against a per-run budget keyed by thread_id;
+    once the budget is spent the tool is told to stop. No thread_id means no cap."""
+    from rag.query.deepagent import RESEARCH_BUDGET, _budgets, _over_research_budget, _web_calls
+
+    cfg = {"configurable": {"thread_id": "t-budget"}}
+    _web_calls["t-budget"] = RESEARCH_BUDGET - 1
+    assert _over_research_budget(cfg) is False  # this call spends exactly the budget
+    assert _over_research_budget(cfg) is True  # one past the budget → stop
+    assert _over_research_budget({"configurable": {}}) is False  # untracked run, no cap
+
+    # A per-run budget of 0 turns the cap off — the tool never gets told to stop.
+    _budgets["t-budget"] = 0
+    assert _over_research_budget(cfg) is False
+    _web_calls.pop("t-budget", None)
+    _budgets.pop("t-budget", None)
+
+
+def test_step_label_summarizes_each_tool_call():
+    """The live trace labels each tool call by its intent, folding in the salient arg
+    (query/url/description). Unknown tools fall back to their raw name."""
+    assert "stillness" in _step_label("retrieve_corpus", {"query": "stillness"})
+    assert "example.com" in _step_label("fetch_page", {"url": "https://example.com"})
+    assert _step_label("write_todos", {}) == "Planning the research"
+    assert _step_label("mystery_tool", {}) == "mystery_tool"
 
 
 def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):

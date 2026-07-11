@@ -1,7 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import type { Citation, SourcePassage, StreamEvent } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type {
+  Citation,
+  CorpusSource,
+  DeepAgentEvent,
+  SourcePassage,
+  StreamEvent,
+} from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -15,6 +23,23 @@ export default function Home() {
   const [format, setFormat] = useState<"prose" | "claims">("prose");
   const [model, setModel] = useState<"pro" | "flash">("pro");
   const [topK, setTopK] = useState(25);
+  const [deepAgent, setDeepAgent] = useState(false);
+  // Max web calls the deep agent may make per question; 0 = unlimited (cap off).
+  const [researchBudget, setResearchBudget] = useState(40);
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [corpusSources, setCorpusSources] = useState<CorpusSource[]>([]);
+  const [submitted, setSubmitted] = useState("");
+  // One research thread per browser session, so follow-ups reuse the durable
+  // notebook the deep agent builds up (multi-turn continuity).
+  const [threadId] = useState(() => crypto.randomUUID());
+
+  // Keep the newest agent step in view without growing the page: the trace is a
+  // fixed-height scroller that follows the tail as steps stream in.
+  const traceRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = traceRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [steps]);
 
   function ask(e: React.FormEvent) {
     e.preventDefault();
@@ -33,7 +58,57 @@ export default function Home() {
     setCitations([]);
     setOpenChip(null);
     setSource(null);
+    setSteps([]);
+    setCorpusSources([]);
+    setSubmitted(question.trim());
     setLoading(true);
+
+    // The deep agent answers from the corpus then enriches each point with web
+    // research. It streams its process — `status` steps as it retrieves, plans,
+    // and delegates to the research subagent — then one terminal `answer`.
+    if (deepAgent) {
+      const res = await fetch(`${API_URL}/ask/agent/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, thread_id: threadId, research_budget: researchBudget }),
+      });
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        done = chunk.done;
+        if (!chunk.value) continue;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const data = frame.replace(/^data: /, "");
+          if (!data) continue;
+          const event: DeepAgentEvent = JSON.parse(data);
+          if (event.type === "status") {
+            setSteps((prev) => [
+              ...prev,
+              { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
+            ]);
+          } else if (event.type === "result") {
+            // Attach the tool result to the step it belongs to (matched by call_id).
+            setSteps((prev) =>
+              prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
+            );
+          } else if (event.type === "sources") {
+            setCorpusSources(event.sources);
+          } else if (event.type === "answer") {
+            setAnswer(event.text);
+          } else if (event.type === "error") {
+            setAnswer(`Error: ${event.message}`);
+          }
+        }
+      }
+      setLoading(false);
+      return;
+    }
 
     const res = await fetch(`${API_URL}/ask/stream`, {
       method: "POST",
@@ -85,6 +160,8 @@ export default function Home() {
     <main className="mx-auto max-w-4xl px-4 py-10">
 
       <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
+        {!deepAgent && (
+          <>
         <label
           title="generation model"
           className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
@@ -119,6 +196,35 @@ export default function Home() {
         >
           {format === "prose" ? "Switch to claims + citations" : "Switch to prose"}
         </button>
+          </>
+        )}
+        {deepAgent && (
+          <label
+            title="web calls the deep agent may make per question (0 = unlimited)"
+            className="flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-3 pr-1.5 transition-colors focus-within:bg-gray-200 hover:bg-gray-200"
+          >
+            <span className="font-mono text-xs uppercase tracking-wide text-gray-500">web calls</span>
+            <input
+              type="number"
+              min={0}
+              value={researchBudget}
+              onChange={(e) => setResearchBudget(Number(e.target.value))}
+              className="w-12 rounded-full bg-white py-0.5 text-center font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+            />
+          </label>
+        )}
+        <button
+          onClick={() => setDeepAgent((v) => !v)}
+          disabled={loading}
+          title="Answer from the corpus, then enrich each point with external web research (slower)"
+          className={`rounded-full px-3 py-1 text-sm font-medium transition-colors disabled:opacity-50 ${
+            deepAgent
+              ? "bg-purple-600 text-white hover:bg-purple-700"
+              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }`}
+        >
+          Deep Agent {deepAgent ? "on" : "off"}
+        </button>
       </div>
 
       <form onSubmit={ask} className="mb-8 flex gap-2">
@@ -137,11 +243,45 @@ export default function Home() {
         </button>
       </form>
 
-      {answer && (
-        <article className="mb-8 whitespace-pre-wrap leading-relaxed">
-          <AnswerBody answer={answer} citations={citations} openSource={openSource} />
-        </article>
+      {submitted && (
+        <div className="mb-6 flex justify-end">
+          <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-gray-100 px-4 py-2 text-gray-800">
+            {submitted}
+          </div>
+        </div>
       )}
+
+      {steps.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 text-sm font-medium text-gray-500">Reasoning</h2>
+          <div
+            ref={traceRef}
+            className="max-h-72 space-y-1.5 overflow-y-auto border-l-2 border-gray-200 pl-4"
+          >
+            {steps.map((s, i) => (
+              <TraceStep key={s.callId || i} step={s} active={loading && i === steps.length - 1} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {answer &&
+        (deepAgent ? (
+          // The deep agent answers in Markdown (headings, quotes, tables, links);
+          // render it as such. The /ask path stays on AnswerBody for its inline,
+          // span-anchored citation markers, which Markdown can't express.
+          <article className="prose prose-neutral mb-8 max-w-none">
+            <Markdown remarkPlugins={[remarkGfm]}>{answer}</Markdown>
+          </article>
+        ) : (
+          <article className="mb-8 whitespace-pre-wrap leading-relaxed">
+            <AnswerBody answer={answer} citations={citations} openSource={openSource} />
+          </article>
+        ))}
+
+      {deepAgent && corpusSources.length > 0 && <CorpusSources sources={corpusSources} />}
+
+      {deepAgent && answer && <WebSources answer={answer} />}
 
       {citations.length > 0 && (
         <section>
@@ -190,6 +330,126 @@ export default function Home() {
         </section>
       )}
     </main>
+  );
+}
+
+// One tool call in the agent's live trace, plus its result once it arrives.
+type Step = { callId: string; scope: string; tool: string; label: string; result?: string };
+
+// A step in the reasoning trace: a tool badge + summary, collapsible to reveal a
+// preview of what the tool returned. Research-subagent steps are indented. Until
+// the result lands the step is a plain line (nothing to expand); the active step
+// shows a ▸ marker while the agent works.
+function TraceStep({ step, active }: { step: Step; active: boolean }) {
+  const indent = step.scope === "research" ? "ml-4" : "";
+  const head = (
+    <>
+      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500">
+        {step.tool}
+      </span>{" "}
+      <span className="text-gray-600">{step.label}</span>
+      {active && !step.result && <span className="text-gray-300"> ▸</span>}
+    </>
+  );
+  if (!step.result) {
+    return <div className={`text-sm ${indent}`}>{head}</div>;
+  }
+  return (
+    <details className={`text-sm ${indent}`}>
+      <summary className="cursor-pointer marker:text-gray-300">{head}</summary>
+      <pre className="ml-4 mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-500">
+        {step.result}
+      </pre>
+    </details>
+  );
+}
+
+// The corpus passages the answer cites, as chips at the bottom. Clicking one opens
+// that passage in its document — the same /source view the /ask path uses — with the
+// retrieved chunk highlighted. The [n] matches the marker in the answer text.
+function CorpusSources({ sources }: { sources: CorpusSource[] }) {
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [passage, setPassage] = useState<SourcePassage | null>(null);
+
+  async function open(chunkId: number) {
+    if (openId === chunkId) {
+      setOpenId(null);
+      return;
+    }
+    setOpenId(chunkId);
+    setPassage(null);
+    const res = await fetch(`${API_URL}/source/${chunkId}`);
+    setPassage(await res.json());
+  }
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">Corpus sources</h2>
+      <div className="flex flex-wrap gap-2">
+        {sources.map((s) => (
+          <button
+            key={s.chunk_id}
+            onClick={() => open(s.chunk_id)}
+            className={`rounded-full border px-3 py-1 text-sm hover:bg-gray-100 ${
+              openId === s.chunk_id ? "border-black bg-gray-100" : "border-gray-300"
+            }`}
+          >
+            [{s.n}] {s.title}
+          </button>
+        ))}
+      </div>
+
+      {openId !== null && (
+        <div className="mt-4 rounded border border-gray-300 p-4">
+          {passage === null ? (
+            <p className="text-sm text-gray-400">Loading source…</p>
+          ) : (
+            <>
+              <div className="mb-3">
+                <div className="font-medium">{passage.title}</div>
+                <div className="text-xs text-gray-500">
+                  {passage.section} · passage {passage.chunk_index + 1} of {passage.n_chunks}
+                </div>
+              </div>
+              <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+                <span className="text-gray-400">{passage.before}</span>
+                {passage.before && "\n"}
+                <mark className="bg-yellow-100">{passage.chunk}</mark>
+                {passage.after && "\n"}
+                <span className="text-gray-400">{passage.after}</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// The deep agent cites web sources as inline URLs in its answer. Pull them out into
+// clickable chips linking to each source (corpus points cite [n] inline).
+function WebSources({ answer }: { answer: string }) {
+  const urls = [
+    ...new Set((answer.match(/https?:\/\/[^\s)\]<>"']+/g) ?? []).map((u) => u.replace(/[.,;]+$/, ""))),
+  ];
+  if (urls.length === 0) return null;
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">Web sources</h2>
+      <div className="flex flex-wrap gap-2">
+        {urls.map((u, i) => (
+          <a
+            key={u}
+            href={u}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-gray-300 px-3 py-1 text-sm text-blue-600 hover:bg-gray-100"
+          >
+            [{i + 1}] {new URL(u).hostname.replace(/^www\./, "")}
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -27,6 +27,33 @@ export type StreamEvent =
   | { type: "text"; text: string }
   | ({ type: "citation" } & Citation);
 
+// Returned by POST /ask/agent: the deep agent's answer, citations inline in the
+// text. thread_id keys the durable research thread for multi-turn follow-ups.
+export interface DeepAgentResponse {
+  answer: string;
+  thread_id: string;
+}
+
+// A corpus passage the deep agent's answer cites, listed as a chip at the bottom.
+// `n` is its stable [n] in the answer; `chunk_id` opens it via GET /source/{chunk_id}.
+export interface CorpusSource {
+  n: number;
+  chunk_id: number;
+  title: string;
+  source: string;
+}
+
+// SSE from POST /ask/agent/stream: a `status` event per tool call and a `result`
+// event per tool result (correlated by call_id) stream in as the agent works
+// (scope "research" = inside the web-research subagent), then a `sources` event
+// listing the cited corpus passages and one terminal `answer` — or `error`.
+export type DeepAgentEvent =
+  | { type: "status"; scope: "main" | "research"; call_id: string; tool: string; label: string }
+  | { type: "result"; call_id: string; preview: string }
+  | { type: "sources"; sources: CorpusSource[] }
+  | { type: "answer"; text: string; thread_id: string }
+  | { type: "error"; message: string };
+
 // Returned by GET /source/{chunk_id}: the cited chunk in its document context.
 export interface SourcePassage {
   title: string;

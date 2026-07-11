@@ -34,6 +34,12 @@ class Config:
     max_tokens: int
     structured_max_tokens: int
     ocr_model: str
+    agent_model: str
+    research_subagent_model: str
+    agent_top_k: int
+    agent_method: str
+    enable_hitl: bool
+    research_budget: int
 
 
 def _load() -> Config:
