@@ -121,13 +121,6 @@ research_model = ChatOpenAI(
 # model wired inside _distill — not the subagent's model.
 _distill_client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=environ["OPENROUTER_API_KEY"])
 
-# One shared Langfuse handler, attached to each run's config so every LLM and tool
-# call in the LangGraph run (across its worker threads) nests under the request's
-# span, giving one trace per request with token usage. Reuses the singleton client,
-# so it's a no-op when Langfuse keys are unset.
-_langfuse_handler = CallbackHandler()
-
-
 # Per-run registries of corpus passages the agent has retrieved, keyed by thread_id:
 # retrieve_corpus fills one so a passage keeps the same [n] across repeated retrievals
 # and stream_deepagent can list the cited passages as sources. Keyed by thread_id
@@ -293,12 +286,15 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
     Returns `{"status": "done", "answer", "thread_id"}`, or — when the HITL gate
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
-    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
+    config = {"configurable": {"thread_id": thread_id}}
     _web_calls[thread_id] = 0
     _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
+        # The handler must be built inside the active span so the LangGraph run nests
+        # under it — a module-level handler binds to the trace root instead.
+        config["callbacks"] = [CallbackHandler()]
         result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
         if result.get("__interrupt__"):
             pending = _pending_tool_calls(result["__interrupt__"])
@@ -314,13 +310,14 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     the run — from a separate, later request, even across a restart (the state lives
     in Postgres). `decision` is "approve" or "reject"; one decision is sent per pending
     tool call. Returns the same shapes as run_deepagent (it may pause again)."""
-    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
+    config = {"configurable": {"thread_id": thread_id}}
     _web_calls[thread_id] = 0
     pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
     decisions = [{"type": decision} for _ in pending]
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent-resume", input=decision
     ) as span:
+        config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
         result = AGENT.invoke(Command(resume={"decisions": decisions}), config)
         if result.get("__interrupt__"):
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
@@ -372,13 +369,14 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
     result. Subagent steps stream too (via subgraphs). Terminated by one `answer`
     — or `error` if the run blew up. `research_budget` caps web calls (0 = unlimited);
     defaults to config. Mirrors stream_agent()."""
-    config = {"configurable": {"thread_id": thread_id}, "callbacks": [_langfuse_handler]}
+    config = {"configurable": {"thread_id": thread_id}}
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     _web_calls[thread_id] = 0  # fresh research budget for this run
     _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
+        config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
         try:
             for namespace, update in AGENT.stream(
                 {"messages": [{"role": "user", "content": question}]},
