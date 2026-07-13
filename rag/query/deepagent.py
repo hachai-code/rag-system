@@ -16,6 +16,7 @@ existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 
 import re
 from os import environ
+from uuid import uuid4
 
 import psycopg
 from deepagents import create_deep_agent
@@ -41,6 +42,7 @@ from .answer import OPENROUTER_BASE_URL
 from .retrieve import EMBED_DIM, VOYAGE_MODEL, _voyage, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,
+    _cited_urls,
     _distill,
     _encoder,
     fetch_page as _fetch_page,
@@ -320,6 +322,9 @@ AGENT = create_deep_agent(
 )
 
 
+_NO_ANSWER = "The agent finished without producing an answer."
+
+
 def _final_answer(values: dict) -> str:
     """The typed answer when the model delivered one. The todo middleware tells the
     model to answer in plain text while ToolStrategy expects a DeepAnswer call — when
@@ -330,7 +335,26 @@ def _final_answer(values: dict) -> str:
     for msg in reversed(values.get("messages", [])):
         if getattr(msg, "type", None) == "ai" and msg.text:
             return msg.text
-    return "The agent finished without producing an answer."
+    return _NO_ANSWER
+
+
+def _save_qa_record(thread_id: str, question: str, answer: str, values: dict) -> None:
+    """One Q&A cache record per completed run, semantically indexed on the question.
+    put() embeds synchronously — one Voyage call after the answer already exists."""
+    if answer == _NO_ANSWER:
+        return
+    files = values.get("files") or {}
+    _store.put(_QA_NS, uuid4().hex, {
+        "question": question,
+        "answer": answer,
+        "corpus_sources": _cited_corpus_sources(thread_id, answer),
+        "web_urls": sorted(_cited_urls(answer)),
+        # deepagents FileData -> plain text; skip base64 (binary) files
+        "research_files": {
+            path: fd["content"] for path, fd in files.items()
+            if fd.get("encoding", "utf-8") == "utf-8"
+        },
+    })
 
 
 def _pending_tool_calls(interrupts) -> list[dict]:
@@ -355,29 +379,37 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
     config = {"configurable": {"thread_id": thread_id}}
+    _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     _web_calls[thread_id] = 0
     _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
-    with get_client().start_as_current_observation(
-        as_type="span", name="rag-agent", input=question
-    ) as span:
-        # The handler must be built inside the active span so the LangGraph run nests
-        # under it — a module-level handler binds to the trace root instead.
-        config["callbacks"] = [CallbackHandler()]
-        result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
-        if result.get("__interrupt__"):
-            pending = _pending_tool_calls(result["__interrupt__"])
-            span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": pending}
-        answer = _final_answer(result)
-        span.update(output=answer, metadata={"thread_id": thread_id})
-    return {"status": "done", "answer": answer, "thread_id": thread_id}
+    try:
+        with get_client().start_as_current_observation(
+            as_type="span", name="rag-agent", input=question
+        ) as span:
+            # The handler must be built inside the active span so the LangGraph run nests
+            # under it — a module-level handler binds to the trace root instead.
+            config["callbacks"] = [CallbackHandler()]
+            result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
+            if result.get("__interrupt__"):
+                pending = _pending_tool_calls(result["__interrupt__"])
+                span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
+                return {"status": "awaiting_approval", "thread_id": thread_id, "pending": pending}
+            answer = _final_answer(result)
+            _save_qa_record(thread_id, question, answer, result)
+            span.update(output=answer, metadata={"thread_id": thread_id})
+        return {"status": "done", "answer": answer, "thread_id": thread_id}
+    finally:
+        _registries.pop(thread_id, None)
+        _web_calls.pop(thread_id, None)
+        _budgets.pop(thread_id, None)
 
 
 def resume_deepagent(thread_id: str, decision: str) -> dict:
     """Approve or reject the paused external-research gate on `thread_id` and continue
     the run — from a separate, later request, even across a restart (the state lives
     in Postgres). `decision` is "approve" or "reject"; one decision is sent per pending
-    tool call. Returns the same shapes as run_deepagent (it may pause again)."""
+    tool call. Returns the same shapes as run_deepagent (it may pause again). Resumed
+    runs are not written to the Q&A cache — the original question isn't in scope here."""
     config = {"configurable": {"thread_id": thread_id}}
     _web_calls[thread_id] = 0
     pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
@@ -485,6 +517,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
             else:
                 # Read the final answer from the typed response channel, not the chat.
                 answer = _final_answer(state.values)
+                _save_qa_record(thread_id, question, answer, state.values)
                 span.update(output=answer, metadata={"thread_id": thread_id})
                 yield {"type": "sources", "sources": _cited_corpus_sources(thread_id, answer)}
                 yield {"type": "answer", "text": answer, "thread_id": thread_id}
