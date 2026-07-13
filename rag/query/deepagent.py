@@ -19,7 +19,9 @@ from os import environ
 
 import psycopg
 from deepagents import create_deep_agent
+from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -246,6 +248,24 @@ _serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "De
 _checkpointer = PostgresSaver(_conn, serde=_serde)
 _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 
+# DeepSeek flash can get stuck re-submitting an unchanged, fully-completed todo
+# list instead of calling the DeepAnswer tool — and deepagents runs with
+# recursion_limit=9999, so the loop burns thousands of calls before LangGraph
+# steps in (observed live: "Updated todo list to ..." repeated indefinitely). A
+# no-op write_todos never reaches the tool: the model gets told to answer instead.
+class _TodoLoopBreaker(AgentMiddleware):
+    def wrap_tool_call(self, request, handler):
+        call = request.tool_call
+        if (call["name"] == "write_todos"
+                and call["args"].get("todos") == request.state.get("todos")):
+            return ToolMessage(
+                content="Todo list unchanged — stop planning. Deliver the complete "
+                        "final answer now by calling the DeepAnswer tool.",
+                tool_call_id=call["id"],
+            )
+        return handler(request)
+
+
 # The research subagent is dispatched through deepagents' built-in `task` tool, so
 # to pause before external research we gate on `task` (not the subagent's name).
 # Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
@@ -262,7 +282,21 @@ AGENT = create_deep_agent(
     checkpointer=_checkpointer,
     response_format=ToolStrategy(DeepAnswer),
     interrupt_on=_interrupt_on,
+    middleware=[_TodoLoopBreaker()],
 )
+
+
+def _final_answer(values: dict) -> str:
+    """The typed answer when the model delivered one. The todo middleware tells the
+    model to answer in plain text while ToolStrategy expects a DeepAnswer call — when
+    the model follows the text route, salvage the prose instead of raising KeyError."""
+    structured = values.get("structured_response")
+    if structured is not None:
+        return structured.answer
+    for msg in reversed(values.get("messages", [])):
+        if getattr(msg, "type", None) == "ai" and msg.text:
+            return msg.text
+    return "The agent finished without producing an answer."
 
 
 def _pending_tool_calls(interrupts) -> list[dict]:
@@ -300,7 +334,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
             pending = _pending_tool_calls(result["__interrupt__"])
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
             return {"status": "awaiting_approval", "thread_id": thread_id, "pending": pending}
-        answer = result["structured_response"].answer
+        answer = _final_answer(result)
         span.update(output=answer, metadata={"thread_id": thread_id})
     return {"status": "done", "answer": answer, "thread_id": thread_id}
 
@@ -326,7 +360,7 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
                 "thread_id": thread_id,
                 "pending": _pending_tool_calls(result["__interrupt__"]),
             }
-        answer = result["structured_response"].answer
+        answer = _final_answer(result)
         span.update(output=answer, metadata={"thread_id": thread_id})
     return {"status": "done", "answer": answer, "thread_id": thread_id}
 
@@ -416,7 +450,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
                 }
             else:
                 # Read the final answer from the typed response channel, not the chat.
-                answer = state.values["structured_response"].answer
+                answer = _final_answer(state.values)
                 span.update(output=answer, metadata={"thread_id": thread_id})
                 yield {"type": "sources", "sources": _cited_corpus_sources(thread_id, answer)}
                 yield {"type": "answer", "text": answer, "thread_id": thread_id}

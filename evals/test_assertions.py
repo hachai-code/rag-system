@@ -243,3 +243,51 @@ def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
     assert texts == ["still", "ness ", "begins"]  # streamed per-token, not one event
     assert captured["system"] == "OVERRIDE" and captured["stream"] is True
     assert len(cites) == len(HITS)  # retrieved chunks emitted as proof
+
+
+def test_unknown_tool_error_redirects_to_real_tools():
+    from rag.query.web_search_agent import _execute_tool
+
+    result = _execute_tool("write_todos", '{"todos": []}')
+    assert result.startswith("Tool error")
+    assert "search_web" in result and "fetch_page" in result  # break tool fixation
+
+
+def test_todo_loop_breaker_blocks_noop_write_todos():
+    from rag.query.deepagent import _TodoLoopBreaker
+
+    todos = [{"content": "research", "status": "completed"}]
+    request = SimpleNamespace(
+        tool_call={"name": "write_todos", "args": {"todos": todos}, "id": "tc1"},
+        state={"todos": todos},
+    )
+
+    def handler(_):
+        raise AssertionError("no-op write_todos must not reach the tool")
+
+    result = _TodoLoopBreaker().wrap_tool_call(request, handler)
+    assert "final answer" in result.content
+
+
+def test_todo_loop_breaker_passes_through_real_updates():
+    from rag.query.deepagent import _TodoLoopBreaker
+
+    request = SimpleNamespace(
+        tool_call={"name": "write_todos",
+                   "args": {"todos": [{"content": "new", "status": "pending"}]},
+                   "id": "tc1"},
+        state={"todos": []},
+    )
+    sentinel = object()
+    assert _TodoLoopBreaker().wrap_tool_call(request, lambda _: sentinel) is sentinel
+
+
+def test_final_answer_falls_back_to_last_ai_text():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from rag.query.deepagent import DeepAnswer, _final_answer
+
+    assert _final_answer({"structured_response": DeepAnswer(answer="typed")}) == "typed"
+    assert _final_answer({"messages": [
+        HumanMessage(content="q"), AIMessage(content="prose answer"),
+    ]}) == "prose answer"

@@ -191,7 +191,9 @@ def _execute_tool(name: str, arguments: str) -> str:
             return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
         if name == "fetch_page":
             return fetch_page(args["url"])
-        return f"Tool error: unknown tool {name!r}."
+        return (f"Tool error: unknown tool {name!r}. It does not exist here — "
+                "there is no todo list, plan, or subagent tool. Your only tools "
+                "are search_web and fetch_page; continue the research with those.")
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
 
