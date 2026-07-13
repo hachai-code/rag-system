@@ -22,7 +22,7 @@ import psycopg
 from deepagents import create_deep_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -298,6 +298,22 @@ class _TodoLoopBreaker(AgentMiddleware):
         return handler(request)
 
 
+# Appends the saved memories to the system prompt of every main-agent model call.
+# wrap_model_call rather than @dynamic_prompt: dynamic_prompt replaces the whole
+# system message, which would clobber the AGENT_PROMPT + deepagents base prompt
+# composition. Re-searching per call (one cheap indexed query) keeps facts saved
+# mid-run visible to the very next call.
+class _MemoryInjector(AgentMiddleware):
+    def wrap_model_call(self, request, handler):
+        memories = request.runtime.store.search(_MEMORY_NS, limit=200)
+        if memories:
+            block = "\n".join(f"- {m.value['content']}" for m in memories)
+            request = request.override(system_message=SystemMessage(
+                f"{request.system_prompt}\n\n## What you remember about this user\n{block}"
+            ))
+        return handler(request)
+
+
 # The research subagent is dispatched through deepagents' built-in `task` tool, so
 # to pause before external research we gate on `task` (not the subagent's name).
 # Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
@@ -314,7 +330,7 @@ AGENT = create_deep_agent(
     checkpointer=_checkpointer,
     response_format=ToolStrategy(DeepAnswer),
     interrupt_on=_interrupt_on,
-    middleware=[_TodoLoopBreaker()],
+    middleware=[_TodoLoopBreaker(), _MemoryInjector()],
     store=_store,
 )
 
