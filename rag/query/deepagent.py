@@ -16,13 +16,12 @@ existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 
 import re
 from os import environ
-from uuid import uuid4
 
 import psycopg
 from deepagents import create_deep_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -31,7 +30,6 @@ from langfuse.langchain import CallbackHandler
 from langfuse.openai import OpenAI
 from pydantic import BaseModel, Field
 from langgraph.types import Command
-from langgraph.config import get_store
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.store.postgres import PostgresStore
@@ -70,12 +68,7 @@ outside sources, and save the subagent's findings to a file named for that point
 turned up, written out in full and citing both the corpus passage [n] and the web \
 URLs the subagent reported.
 
-If the corpus does not cover the question, say so plainly instead of guessing.
-
-When the user reveals a durable fact worth remembering across conversations — a \
-preference about answer style, feedback on your output, or a topic they keep \
-returning to — save it with the save_memory tool (one concise fact per call). \
-Do not save question content or corpus passages; only save facts about the user."""
+If the corpus does not cover the question, say so plainly instead of guessing."""
 
 VALIDATION_PROMPT = """You research one specific point drawn from the innerdance \
 corpus. Use web_search and fetch_page to find outside sources that corroborate, \
@@ -175,17 +168,6 @@ def retrieve_corpus(query: str, config: RunnableConfig) -> str:
     return format_hits_for_deepagent(hits, registry)
 
 
-# get_store() resolves the store the graph was compiled with (store=_store below)
-# from the run's context — the same injection mechanism that hands retrieve_corpus
-# its RunnableConfig.
-@tool
-def save_memory(content: str) -> str:
-    """Persist one fact about the user for future conversations — a preference,
-    a correction, or a recurring interest. One concise sentence per call."""
-    get_store().put(_MEMORY_NS, uuid4().hex, {"content": content})
-    return "Memory saved."
-
-
 # Per-run count of web tool calls (search + fetch), keyed by thread_id — seeded at 0
 # at the start of each run and read via the config LangGraph injects into the tools.
 # It caps a flailing research subagent (which can otherwise fetch dozens of dead URLs),
@@ -267,18 +249,15 @@ _serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "De
 _checkpointer = PostgresSaver(_conn, serde=_serde)
 _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 
-# Long-term memory store: cross-thread facts about the user, unlike the
-# checkpointer's per-thread state. Its own connection (not _conn): saver and
-# store each serialize access behind their own lock, so sharing one connection
-# across concurrent checkpoint writes and store reads isn't safe.
+# Long-term memory store: cross-thread data, unlike the checkpointer's per-thread
+# state. Its own connection (not _conn): saver and store each serialize access
+# behind their own lock, so sharing one connection across concurrent checkpoint
+# writes and store reads isn't safe.
 _store_conn = psycopg.connect(
     DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
 )
 _store = PostgresStore(_store_conn)
 _store.setup()  # idempotent: creates the store table on first run
-
-USER_ID = "default"  # single-user deployment; no user identity in the frontend yet
-_MEMORY_NS = ("memories", USER_ID)
 
 # DeepSeek flash can get stuck re-submitting an unchanged, fully-completed todo
 # list instead of calling the DeepAnswer tool — and deepagents runs with
@@ -298,22 +277,6 @@ class _TodoLoopBreaker(AgentMiddleware):
         return handler(request)
 
 
-# Appends the saved memories to the system prompt of every main-agent model call.
-# wrap_model_call rather than @dynamic_prompt: dynamic_prompt replaces the whole
-# system message, which would clobber the AGENT_PROMPT + deepagents base prompt
-# composition. Re-searching per call (one cheap indexed query) keeps facts saved
-# mid-run visible to the very next call.
-class _MemoryInjector(AgentMiddleware):
-    def wrap_model_call(self, request, handler):
-        memories = request.runtime.store.search(_MEMORY_NS, limit=200)
-        if memories:
-            block = "\n".join(f"- {m.value['content']}" for m in memories)
-            request = request.override(system_message=SystemMessage(
-                f"{request.system_prompt}\n\n## What you remember about this user\n{block}"
-            ))
-        return handler(request)
-
-
 # The research subagent is dispatched through deepagents' built-in `task` tool, so
 # to pause before external research we gate on `task` (not the subagent's name).
 # Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
@@ -324,13 +287,13 @@ _interrupt_on = (
 
 AGENT = create_deep_agent(
     model=model,
-    tools=[retrieve_corpus, save_memory],
+    tools=[retrieve_corpus],
     system_prompt=AGENT_PROMPT,
     subagents=[research_subagent],
     checkpointer=_checkpointer,
     response_format=ToolStrategy(DeepAnswer),
     interrupt_on=_interrupt_on,
-    middleware=[_TodoLoopBreaker(), _MemoryInjector()],
+    middleware=[_TodoLoopBreaker()],
     store=_store,
 )
 
@@ -427,8 +390,6 @@ def _step_label(name: str, args: dict) -> str:
         return f"Reading {args.get('url', '')}"
     if name == "write_todos":
         return "Planning the research"
-    if name == "save_memory":
-        return f"Remembering: {args.get('content', '')}"
     return name
 
 
