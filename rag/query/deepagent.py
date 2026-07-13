@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.store.postgres import PostgresStore
 from psycopg.rows import dict_row
 
 from ..config import CONFIG
@@ -248,6 +249,19 @@ _serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "De
 _checkpointer = PostgresSaver(_conn, serde=_serde)
 _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 
+# Long-term memory store: cross-thread facts about the user, unlike the
+# checkpointer's per-thread state. Its own connection (not _conn): saver and
+# store each serialize access behind their own lock, so sharing one connection
+# across concurrent checkpoint writes and store reads isn't safe.
+_store_conn = psycopg.connect(
+    DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
+)
+_store = PostgresStore(_store_conn)
+_store.setup()  # idempotent: creates the store table on first run
+
+USER_ID = "default"  # single-user deployment; no user identity in the frontend yet
+_MEMORY_NS = ("memories", USER_ID)
+
 # DeepSeek flash can get stuck re-submitting an unchanged, fully-completed todo
 # list instead of calling the DeepAnswer tool — and deepagents runs with
 # recursion_limit=9999, so the loop burns thousands of calls before LangGraph
@@ -283,6 +297,7 @@ AGENT = create_deep_agent(
     response_format=ToolStrategy(DeepAnswer),
     interrupt_on=_interrupt_on,
     middleware=[_TodoLoopBreaker()],
+    store=_store,
 )
 
 
