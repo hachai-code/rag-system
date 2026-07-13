@@ -38,7 +38,7 @@ from psycopg.rows import dict_row
 from ..config import CONFIG
 from ..db import DB_URL, connect
 from .answer import OPENROUTER_BASE_URL
-from .retrieve import retrieve
+from .retrieve import EMBED_DIM, VOYAGE_MODEL, _voyage, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,
     _distill,
@@ -256,8 +256,30 @@ _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 _store_conn = psycopg.connect(
     DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
 )
-_store = PostgresStore(_store_conn)
-_store.setup()  # idempotent: creates the store table on first run
+
+
+# PostgresStore calls embed_documents for BOTH put and search (there is no
+# embed_query path), so one sync callable covers both sides. input_type="document"
+# everywhere keeps stored questions and search queries in one consistent space —
+# Voyage's query/document asymmetric tuning isn't reachable through this store.
+def _embed_for_store(texts) -> list[list[float]]:
+    return _voyage.embed(
+        list(texts), model=VOYAGE_MODEL, input_type="document", output_dimension=EMBED_DIM
+    ).embeddings
+
+
+# Semantic index over the "question" field of qa records (score = cosine similarity,
+# higher is better). setup() is idempotent per migration: the base store table is
+# untouched; the index config adds the vector migrations (pgvector extension check,
+# store_vectors table, HNSW index — CREATE INDEX CONCURRENTLY needs the autocommit
+# connection above).
+_store = PostgresStore(
+    _store_conn,
+    index={"dims": EMBED_DIM, "embed": _embed_for_store, "fields": ["question"]},
+)
+_store.setup()
+
+_QA_NS = ("qa",)  # semantic Q&A cache — one shared namespace for the whole deployment
 
 # DeepSeek flash can get stuck re-submitting an unchanged, fully-completed todo
 # list instead of calling the DeepAnswer tool — and deepagents runs with
