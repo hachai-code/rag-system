@@ -8,6 +8,7 @@ import type {
   CorpusSource,
   DeepAgentEvent,
   QAMemory,
+  QAMemoryDetail,
   SourcePassage,
   StreamEvent,
 } from "@/lib/types";
@@ -36,6 +37,7 @@ export default function Home() {
   // The deep agent's stored long-term memories, listed in the sidebar.
   const [memories, setMemories] = useState<QAMemory[]>([]);
   const [memoryKey, setMemoryKey] = useState<string | null>(null);
+  const [memory, setMemory] = useState<QAMemoryDetail | null>(null);
 
   async function loadMemories() {
     const res = await fetch(`${API_URL}/qa`);
@@ -44,6 +46,20 @@ export default function Home() {
   useEffect(() => {
     loadMemories();
   }, []);
+
+  // Open a memory from the sidebar in the main column; clicking it again (or
+  // "Back to chat") returns to the chat view, which keeps its state meanwhile.
+  async function selectMemory(key: string) {
+    if (memoryKey === key) {
+      setMemoryKey(null);
+      setMemory(null);
+      return;
+    }
+    setMemoryKey(key);
+    setMemory(null);
+    const res = await fetch(`${API_URL}/qa/${key}`);
+    setMemory(await res.json());
+  }
 
   // Keep the newest agent step in view without growing the page: the trace is a
   // fixed-height scroller that follows the tail as steps stream in.
@@ -171,12 +187,17 @@ export default function Home() {
 
   return (
     <div className="flex">
-      <MemorySidebar
-        memories={memories}
-        selectedKey={memoryKey}
-        onSelect={(key) => setMemoryKey((k) => (k === key ? null : key))}
-      />
+      <MemorySidebar memories={memories} selectedKey={memoryKey} onSelect={selectMemory} />
       <main className="mx-auto max-w-4xl flex-1 px-4 py-10">
+
+      {memoryKey !== null ? (
+        memory === null ? (
+          <p className="text-sm text-gray-400">Loading memory…</p>
+        ) : (
+          <MemoryViewer memory={memory} onBack={() => selectMemory(memoryKey)} />
+        )
+      ) : (
+        <>
 
       <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
         {!deepAgent && (
@@ -348,7 +369,47 @@ export default function Home() {
           )}
         </section>
       )}
+        </>
+      )}
     </main>
+    </div>
+  );
+}
+
+// A stored memory opened from the sidebar: the full cached record — question,
+// markdown answer, corpus sources, web sources, and the research subagent's notes.
+function MemoryViewer({ memory, onBack }: { memory: QAMemoryDetail; onBack: () => void }) {
+  return (
+    <div>
+      <button onClick={onBack} className="mb-6 text-sm text-blue-600 hover:underline">
+        ← Back to chat
+      </button>
+      <h1 className="mb-1 text-xl font-medium">{memory.question}</h1>
+      <div className="mb-6 text-xs text-gray-500">
+        Remembered {new Date(memory.created_at).toLocaleString()}
+      </div>
+      <article className="prose prose-neutral mb-8 max-w-none">
+        <Markdown remarkPlugins={[remarkGfm]}>{memory.answer}</Markdown>
+      </article>
+      {memory.corpus_sources.length > 0 && <CorpusSources sources={memory.corpus_sources} />}
+      <WebSources answer={memory.answer} />
+      {Object.keys(memory.research_files).length > 0 && (
+        <section className="mb-8">
+          <h2 className="mb-2 text-sm font-medium text-gray-500">Research notes</h2>
+          <div className="space-y-1.5">
+            {Object.entries(memory.research_files).map(([path, text]) => (
+              <details key={path} className="text-sm">
+                <summary className="cursor-pointer font-mono text-xs text-gray-600 marker:text-gray-300">
+                  {path}
+                </summary>
+                <pre className="mt-1 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-500">
+                  {text}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
