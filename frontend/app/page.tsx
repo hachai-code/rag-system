@@ -7,6 +7,7 @@ import type {
   Citation,
   CorpusSource,
   DeepAgentEvent,
+  QAMemory,
   SourcePassage,
   StreamEvent,
 } from "@/lib/types";
@@ -32,6 +33,17 @@ export default function Home() {
   // One research thread per browser session, so follow-ups reuse the durable
   // notebook the deep agent builds up (multi-turn continuity).
   const [threadId] = useState(() => crypto.randomUUID());
+  // The deep agent's stored long-term memories, listed in the sidebar.
+  const [memories, setMemories] = useState<QAMemory[]>([]);
+  const [memoryKey, setMemoryKey] = useState<string | null>(null);
+
+  async function loadMemories() {
+    const res = await fetch(`${API_URL}/qa`);
+    setMemories(await res.json());
+  }
+  useEffect(() => {
+    loadMemories();
+  }, []);
 
   // Keep the newest agent step in view without growing the page: the trace is a
   // fixed-height scroller that follows the tail as steps stream in.
@@ -107,6 +119,7 @@ export default function Home() {
         }
       }
       setLoading(false);
+      loadMemories(); // the finished run may have stored a new memory
       return;
     }
 
@@ -157,7 +170,13 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-10">
+    <div className="flex">
+      <MemorySidebar
+        memories={memories}
+        selectedKey={memoryKey}
+        onSelect={(key) => setMemoryKey((k) => (k === key ? null : key))}
+      />
+      <main className="mx-auto max-w-4xl flex-1 px-4 py-10">
 
       <div className="mb-2 flex items-center justify-end gap-4 text-sm text-gray-400">
         {!deepAgent && (
@@ -330,6 +349,47 @@ export default function Home() {
         </section>
       )}
     </main>
+    </div>
+  );
+}
+
+// The deep agent's long-term memories (its Q&A cache), newest first. Selecting one
+// will open the full record in the main column. Hidden on small screens.
+// ponytail: no mobile drawer — add one if the public UI needs it.
+function MemorySidebar({
+  memories,
+  selectedKey,
+  onSelect,
+}: {
+  memories: QAMemory[];
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <aside className="hidden w-72 shrink-0 border-r border-gray-200 md:block">
+      <div className="sticky top-0 h-screen overflow-y-auto p-4">
+        <h2 className="mb-3 text-sm font-medium text-gray-500">Memory</h2>
+        {memories.length === 0 && (
+          <p className="text-sm text-gray-400">No memories yet — answered questions land here.</p>
+        )}
+        <div className="space-y-1">
+          {memories.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => onSelect(m.key)}
+              className={`block w-full rounded border px-3 py-2 text-left text-sm hover:bg-gray-100 ${
+                selectedKey === m.key ? "border-black bg-gray-100" : "border-transparent"
+              }`}
+            >
+              <span className="line-clamp-2">{m.question}</span>
+              <span className="mt-0.5 block text-xs text-gray-400">
+                {new Date(m.created_at).toLocaleDateString()}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </aside>
   );
 }
 

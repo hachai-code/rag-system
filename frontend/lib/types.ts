@@ -54,6 +54,22 @@ export type DeepAgentEvent =
   | { type: "answer"; text: string; thread_id: string }
   | { type: "error"; message: string };
 
+// Returned by GET /qa: one of the deep agent's stored long-term memories
+// (Q&A cache records), list view — newest first.
+export interface QAMemory {
+  key: string;
+  question: string;
+  created_at: string; // ISO timestamp
+}
+
+// Returned by GET /qa/{key}: the full stored record.
+export interface QAMemoryDetail extends QAMemory {
+  answer: string;
+  corpus_sources: CorpusSource[];
+  web_urls: string[];
+  research_files: Record<string, string>; // path -> research note text
+}
+
 // Returned by GET /source/{chunk_id}: the cited chunk in its document context.
 export interface SourcePassage {
   title: string;
