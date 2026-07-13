@@ -22,7 +22,7 @@ import psycopg
 from deepagents import create_deep_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -70,7 +70,13 @@ outside sources, and save the subagent's findings to a file named for that point
 turned up, written out in full and citing both the corpus passage [n] and the web \
 URLs the subagent reported.
 
-If the corpus does not cover the question, say so plainly instead of guessing."""
+If the corpus does not cover the question, say so plainly instead of guessing.
+
+You may be shown similar past Q&As from earlier runs under "Similar past Q&As". \
+Treat them as leads, not truth: reuse their findings and sources when the past \
+question genuinely matches this one, but re-verify against the corpus and redo web \
+research when the match is loose, the question differs in scope, or the answer looks \
+stale. Never cite a past Q&A itself as a source."""
 
 VALIDATION_PROMPT = """You research one specific point drawn from the innerdance \
 corpus. Use web_search and fetch_page to find outside sources that corroborate, \
@@ -301,6 +307,45 @@ class _TodoLoopBreaker(AgentMiddleware):
         return handler(request)
 
 
+# Per-run "similar past Q&As" lookup, done once at run start (one Voyage-embedded
+# store.search per run, not per model call): the formatted block feeds the injector
+# below; the top similarity score gates the end-of-run cache write in _save_qa_record.
+# ponytail: module dicts, one active run per thread_id (same as the checkpointer assumes).
+_qa_blocks: dict[str, str] = {}
+_qa_top_score: dict[str, float] = {}
+_QA_ANSWER_CHARS = 2000  # cap per past answer so 3 hits don't dominate the prompt
+_QA_DEDUP_SCORE = 0.9  # ponytail: fixed threshold, tune if dupes or collisions appear
+
+
+def _lookup_similar_qa(question: str) -> tuple[str, float]:
+    """(formatted top-3 similar past Q&As, top similarity score) — ("", 0.0) when
+    the cache has nothing."""
+    hits = _store.search(_QA_NS, query=question, limit=3)
+    block = "\n\n".join(
+        f"### Past Q (similarity {h.score:.2f}): {h.value['question']}\n"
+        f"{h.value['answer'][:_QA_ANSWER_CHARS]}\n"
+        f"Web sources: {', '.join(h.value.get('web_urls', [])) or 'none'}"
+        for h in hits
+    )
+    return block, (hits[0].score if hits else 0.0)
+
+
+# Appends the run's similar-past-Q&As block to the system prompt of every main-agent
+# model call. wrap_model_call rather than @dynamic_prompt: the decorator replaces the
+# whole system message, which would clobber the AGENT_PROMPT + deepagents base prompt
+# composition. Never runs on the research subagent (subagent specs carry their own
+# middleware list). execution_info.thread_id is this run's configurable thread_id.
+class _QaInjector(AgentMiddleware):
+    def wrap_model_call(self, request, handler):
+        info = request.runtime.execution_info
+        block = _qa_blocks.get(info.thread_id, "") if info else ""
+        if block:
+            request = request.override(system_message=SystemMessage(
+                f"{request.system_prompt}\n\n## Similar past Q&As\n{block}"
+            ))
+        return handler(request)
+
+
 # The research subagent is dispatched through deepagents' built-in `task` tool, so
 # to pause before external research we gate on `task` (not the subagent's name).
 # Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
@@ -317,7 +362,7 @@ AGENT = create_deep_agent(
     checkpointer=_checkpointer,
     response_format=ToolStrategy(DeepAnswer),
     interrupt_on=_interrupt_on,
-    middleware=[_TodoLoopBreaker()],
+    middleware=[_TodoLoopBreaker(), _QaInjector()],
     store=_store,
 )
 
@@ -340,8 +385,10 @@ def _final_answer(values: dict) -> str:
 
 def _save_qa_record(thread_id: str, question: str, answer: str, values: dict) -> None:
     """One Q&A cache record per completed run, semantically indexed on the question.
-    put() embeds synchronously — one Voyage call after the answer already exists."""
-    if answer == _NO_ANSWER:
+    put() embeds synchronously — one Voyage call after the answer already exists.
+    Skipped when the run-start lookup found a near-duplicate cached question: the
+    answer leaned on that record, so writing it again would only duplicate."""
+    if answer == _NO_ANSWER or _qa_top_score.get(thread_id, 0.0) >= _QA_DEDUP_SCORE:
         return
     files = values.get("files") or {}
     _store.put(_QA_NS, uuid4().hex, {
@@ -382,6 +429,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     _web_calls[thread_id] = 0
     _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
+    _qa_blocks[thread_id], _qa_top_score[thread_id] = _lookup_similar_qa(question)
     try:
         with get_client().start_as_current_observation(
             as_type="span", name="rag-agent", input=question
@@ -402,6 +450,8 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
         _registries.pop(thread_id, None)
         _web_calls.pop(thread_id, None)
         _budgets.pop(thread_id, None)
+        _qa_blocks.pop(thread_id, None)
+        _qa_top_score.pop(thread_id, None)
 
 
 def resume_deepagent(thread_id: str, decision: str) -> dict:
@@ -473,6 +523,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
     _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
     _web_calls[thread_id] = 0  # fresh research budget for this run
     _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
+    _qa_blocks[thread_id], _qa_top_score[thread_id] = _lookup_similar_qa(question)
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -527,6 +578,8 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
             _registries.pop(thread_id, None)
             _web_calls.pop(thread_id, None)
             _budgets.pop(thread_id, None)
+            _qa_blocks.pop(thread_id, None)
+            _qa_top_score.pop(thread_id, None)
 
 
 if __name__ == "__main__":
