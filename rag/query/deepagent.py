@@ -16,6 +16,7 @@ existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 
 import re
 from os import environ
+from uuid import uuid4
 
 import psycopg
 from deepagents import create_deep_agent
@@ -30,6 +31,7 @@ from langfuse.langchain import CallbackHandler
 from langfuse.openai import OpenAI
 from pydantic import BaseModel, Field
 from langgraph.types import Command
+from langgraph.config import get_store
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.store.postgres import PostgresStore
@@ -68,7 +70,12 @@ outside sources, and save the subagent's findings to a file named for that point
 turned up, written out in full and citing both the corpus passage [n] and the web \
 URLs the subagent reported.
 
-If the corpus does not cover the question, say so plainly instead of guessing."""
+If the corpus does not cover the question, say so plainly instead of guessing.
+
+When the user reveals a durable fact worth remembering across conversations — a \
+preference about answer style, feedback on your output, or a topic they keep \
+returning to — save it with the save_memory tool (one concise fact per call). \
+Do not save question content or corpus passages; only save facts about the user."""
 
 VALIDATION_PROMPT = """You research one specific point drawn from the innerdance \
 corpus. Use web_search and fetch_page to find outside sources that corroborate, \
@@ -166,6 +173,17 @@ def retrieve_corpus(query: str, config: RunnableConfig) -> str:
     thread_id = config.get("configurable", {}).get("thread_id", "")
     registry = _registries.setdefault(thread_id, {}) if thread_id else None
     return format_hits_for_deepagent(hits, registry)
+
+
+# get_store() resolves the store the graph was compiled with (store=_store below)
+# from the run's context — the same injection mechanism that hands retrieve_corpus
+# its RunnableConfig.
+@tool
+def save_memory(content: str) -> str:
+    """Persist one fact about the user for future conversations — a preference,
+    a correction, or a recurring interest. One concise sentence per call."""
+    get_store().put(_MEMORY_NS, uuid4().hex, {"content": content})
+    return "Memory saved."
 
 
 # Per-run count of web tool calls (search + fetch), keyed by thread_id — seeded at 0
@@ -290,7 +308,7 @@ _interrupt_on = (
 
 AGENT = create_deep_agent(
     model=model,
-    tools=[retrieve_corpus],
+    tools=[retrieve_corpus, save_memory],
     system_prompt=AGENT_PROMPT,
     subagents=[research_subagent],
     checkpointer=_checkpointer,
@@ -393,6 +411,8 @@ def _step_label(name: str, args: dict) -> str:
         return f"Reading {args.get('url', '')}"
     if name == "write_todos":
         return "Planning the research"
+    if name == "save_memory":
+        return f"Remembering: {args.get('content', '')}"
     return name
 
 
