@@ -5,9 +5,10 @@ Run: uv run fastapi dev rag/app.py
 
 import json
 import os
+from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langfuse import get_client
@@ -273,3 +274,42 @@ def ask_deepagent_stream(request: Request, body: DeepAgentRequest) -> StreamingR
 def source(request: Request, chunk_id: int) -> SourcePassage:
     with connect() as conn:
         return SourcePassage(**source_passage(conn, chunk_id))
+
+
+class QAMemory(BaseModel):
+    key: str
+    question: str
+    created_at: datetime
+
+
+class QAMemoryDetail(QAMemory):
+    answer: str
+    corpus_sources: list[dict]  # {n, chunk_id, title, source} as written by the agent
+    web_urls: list[str]
+    research_files: dict[str, str]
+
+
+# The deep agent's Q&A long-term memory (LangGraph store rows under prefix "qa"),
+# queried directly — read-only, so no need to go through the agent's store handle.
+@app.get("/qa")
+@limiter.limit(RATE_LIMIT)
+def qa_memories(request: Request) -> list[QAMemory]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT key, value->>'question' AS question, created_at"
+            " FROM store WHERE prefix = 'qa' ORDER BY created_at DESC LIMIT 200"
+            # ponytail: hard cap, paginate if the cache outgrows it
+        ).fetchall()
+    return [QAMemory(**row) for row in rows]
+
+
+@app.get("/qa/{key}")
+@limiter.limit(RATE_LIMIT)
+def qa_memory(request: Request, key: str) -> QAMemoryDetail:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT value, created_at FROM store WHERE prefix = 'qa' AND key = %s", (key,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return QAMemoryDetail(key=key, created_at=row["created_at"], **row["value"])
