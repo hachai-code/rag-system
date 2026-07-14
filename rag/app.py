@@ -38,6 +38,7 @@ from .query.retrieve import (
 )
 from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.web_search_graph_agent import stream_agent
+from evals.api import router as evals_router
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -61,6 +62,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(evals_router)
 
 # Langfuse tracing: with the LANGFUSE_* keys set, each /ask is one trace; the
 # generation call is auto-captured by the active provider's instrumentor (see README).

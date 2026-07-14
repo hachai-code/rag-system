@@ -136,3 +136,7 @@ Langfuse trace, the generation call auto-captured by the active provider's instr
 
 `evals/` holds the evaluation harness (retrieval metrics, an LLM-as-judge, regression gate)
 and its research artifacts. See `evals/DESIGN.md`.
+
+With the API and frontend running, an eval dashboard (per-dimension pass rate over time,
+judge cost per run, dev-vs-test for the latest config) is at
+[http://localhost:3000/evals](http://localhost:3000/evals) (data via `GET /evals/summary`).

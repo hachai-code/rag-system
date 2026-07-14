@@ -70,6 +70,35 @@ export interface QAMemoryDetail extends QAMemory {
   research_files: Record<string, string>; // path -> research note text
 }
 
+// Returned by GET /evals/summary: one row per eval run, chronological.
+export interface EvalRunSummary {
+  run_id: number;
+  created_at: string;
+  git_sha: string;
+  config_name: string | null;
+  config_hash: string | null;
+  n: number;
+  pass_rate: Record<string, number>; // dimension (A–F) -> 0..1
+  cost: number; // USD, judge calls
+  latency_ms: number;
+}
+
+export interface SplitSummary {
+  run_id: number;
+  n: number;
+  pass_rate: Record<string, number>;
+}
+
+export interface EvalsSummary {
+  runs: EvalRunSummary[];
+  final: {
+    config_name: string | null;
+    config_hash: string | null;
+    dev: SplitSummary | null;
+    test: SplitSummary | null;
+  } | null;
+}
+
 // Returned by GET /source/{chunk_id}: the cited chunk in its document context.
 export interface SourcePassage {
   title: string;
