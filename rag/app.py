@@ -22,6 +22,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .db import connect
+from .guardrails import BLOCKED, check_input, check_output
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
 from .query.retrieve import (
     HYPE,
@@ -143,6 +144,9 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
     with langfuse.start_as_current_observation(
         as_type="span", name="rag-ask", input=body.question
     ) as span:
+        if check_input(body.question):
+            span.update(output=BLOCKED)
+            return AskResponse(answer=BLOCKED, citations=[], sources=[])
         with connect() as conn:
             gate = search(conn, body.question, k=1)  # cheap coverage check only
             if _no_relevant_hits(gate):
@@ -153,6 +157,9 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                             parent_document=body.parent_document, hype=body.hype)
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
+        if check_output(body.question, text):
+            span.update(output=BLOCKED)
+            return AskResponse(answer=BLOCKED, citations=[], sources=[])
         span.update(output=text)
         return AskResponse(
             answer=text,
@@ -173,6 +180,12 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
         with langfuse.start_as_current_observation(
             as_type="span", name="rag-ask-stream", input=body.question
         ) as span:
+            # Input rail only: tokens stream straight to the client, so a post-hoc
+            # output check couldn't unsend them.
+            if check_input(body.question):
+                span.update(output=BLOCKED)
+                yield f"data: {json.dumps({'type': 'text', 'text': BLOCKED})}\n\n"
+                return
             with connect() as conn:
                 gate = search(conn, body.question, k=1)  # cheap coverage check only
                 if _no_relevant_hits(gate):
@@ -203,6 +216,9 @@ class AgentRequest(BaseModel):
 @limiter.limit(RATE_LIMIT)
 def agent_stream(request: Request, body: AgentRequest) -> StreamingResponse:
     def events():
+        if check_input(body.question):
+            yield f"data: {json.dumps({'type': 'error', 'message': BLOCKED})}\n\n"
+            return
         for event in stream_agent(body.question):
             yield f"data: {json.dumps(event)}\n\n"
 
@@ -240,9 +256,18 @@ class ResumeRequest(BaseModel):
 @app.post("/ask/agent")
 @limiter.limit(RATE_LIMIT)
 def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse | AwaitingApproval:
+    if check_input(body.question):
+        return DeepAgentResponse(answer=BLOCKED, thread_id=body.thread_id)
     result = run_deepagent(body.question, body.thread_id, body.research_budget)
+    return _agent_result(body.question, result)
+
+
+def _agent_result(question: str, result: dict) -> DeepAgentResponse | AwaitingApproval:
+    """Shared deep-agent response shaping: HITL pause passthrough, output rail on answers."""
     if result["status"] == "awaiting_approval":
         return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
+    if check_output(question, result["answer"]):
+        return DeepAgentResponse(answer=BLOCKED, thread_id=result["thread_id"])
     return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
 
 
@@ -253,10 +278,10 @@ def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse
 def resume_deepagent_endpoint(
     request: Request, body: ResumeRequest
 ) -> DeepAgentResponse | AwaitingApproval:
+    # No new question to input-check here; the resumed run's answer still gets the
+    # output rail (empty question — self_check_output only reads the bot message).
     result = resume_deepagent(body.thread_id, body.decision)
-    if result["status"] == "awaiting_approval":
-        return AwaitingApproval(thread_id=result["thread_id"], pending=result["pending"])
-    return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
+    return _agent_result("", result)
 
 
 # Deep-agent runs are decoupled from the HTTP connection: POST /ask/agent/run starts
@@ -286,6 +311,9 @@ def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunSta
 
     def work():
         try:
+            if check_input(body.question):
+                run["events"].append({"type": "error", "message": BLOCKED})
+                return
             for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
                 run["events"].append(event)
         except Exception as e:

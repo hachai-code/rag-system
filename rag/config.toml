@@ -36,6 +36,11 @@ structured_max_tokens = 4096              # the JSON-claims path runs longer tha
 [ocr]
 ocr_model = "deepseek/deepseek-v4-pro"    # multimodal; transcribes slide images via OpenRouter
 
+[guardrails]
+# Check-only NeMo Guardrails at the API boundary (rag/guardrails.py). The checker
+# model and enabled rails live in rag/rails/config.yml; this is the kill switch.
+guardrails_enabled = true
+
 [agent]
 # The Deep Agent path (/ask/agent). Runs on cheap models via OpenRouter, same seam
 # as generation. Never pro — flash covers the tool-calling the main agent needs.

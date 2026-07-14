@@ -29,6 +29,7 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0",
     "deepagents",
     "langchain-deepseek",
+    "nemoguardrails>=0.23.0",
 ]
 
 [dependency-groups]
