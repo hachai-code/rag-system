@@ -11,7 +11,7 @@ model + prompt, judge model). Everything that shapes a run is fingerprinted into
 content hash stored on the run, so a run is reproducible from its config + git SHA:
 change a knob or the prompt and the hash changes; leave them and it doesn't.
 
-Reuses the judge from answer/ (rubrics, per-dimension Opus calls, token-priced
+Reuses the judge from answer/ (rubrics, one narrow call per dimension, token-priced
 cost). A new config is a new file — no code edits — which is the point.
 """
 

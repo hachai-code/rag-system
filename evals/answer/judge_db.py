@@ -1,51 +1,33 @@
 """Run the judge and persist it to Postgres (eval_runs + eval_results).
 
-Companion to judge.py, which writes judgments.jsonl. Same narrow-per-dimension Opus
+Companion to judge.py, which writes judgments.jsonl. Same narrow-per-dimension
 judging and rubrics (imported from judge.py, not duplicated), but this records a run
 (git SHA + config) and one row per question with its per-dimension scores/rationales
 plus the run's real cost and latency.
 
 Cost comes from token usage, which instructor only exposes via create_with_completion
 (plain create() drops the raw response); latency is wall time over a question's judge
-calls. Opus 4.8 list price is $5 / $25 per 1M input/output tokens (platform.claude.com).
+calls.
 
 Schema lives in db/migrations/ (eval_runs, eval_results).
 
 Run: uv run python -m evals.answer.judge_db [n]
 """
 
-import os
 import subprocess
 import sys
 import time
 
-import instructor
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
-    EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, rag_answer,
+    EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, judge_client, rag_answer,
 )
-from rag import GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
+from rag import GEN_MODEL, RELEVANCE_THRESHOLD, TOP_K
 from rag.db import connect
 
-# Judge token price (DeepSeek V4 Pro on OpenRouter): $0.435 / $0.87 per 1M in/out.
-IN_PRICE, OUT_PRICE = 0.435 / 1_000_000, 0.87 / 1_000_000
-
-
-def judge_client(provider: str, model: str):
-    """Build the instructor judge client for the configured provider: Anthropic native,
-    or an OpenAI-compatible model (e.g. DeepSeek V4 Pro via OpenRouter). Both fill the
-    Verdict via structured output, so judge_with_usage doesn't care which it got."""
-    if provider == "openai-compat":
-        # Mode.JSON, not TOOLS: DeepSeek on OpenRouter is unreliable at tool-calling, so
-        # ask for the Verdict as JSON in the content (matches the generation path in rag.py).
-        return instructor.from_provider(
-            f"openai/{model}",
-            base_url=OPENROUTER_BASE_URL,
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            mode=instructor.Mode.JSON,
-        )
-    return instructor.from_provider(f"anthropic/{model}", mode=instructor.Mode.TOOLS)
+# Judge token price (DeepSeek V4 Flash on OpenRouter): $0.09 / $0.18 per 1M in/out.
+IN_PRICE, OUT_PRICE = 0.09 / 1_000_000, 0.18 / 1_000_000
 
 
 def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: str = ""):
@@ -82,7 +64,7 @@ def git_sha() -> str:
 def main() -> None:
     items = eval_items()
     n = int(sys.argv[1]) if len(sys.argv) > 1 else len(items)
-    client = instructor.from_provider(f"anthropic/{JUDGE_MODEL}", mode=instructor.Mode.TOOLS)
+    client = judge_client("openai-compat", JUDGE_MODEL)
     config = {
         "judge_model": JUDGE_MODEL,
         "mode": "tools",

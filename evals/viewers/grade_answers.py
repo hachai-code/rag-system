@@ -1,6 +1,6 @@
 """Render an HTML grading sheet for answer_feedback.jsonl.
 
-For each item it shows the question, the reference (Opus) answer and the RAG answer
+For each item it shows the question, the reference answer and the RAG answer
 side by side, whether the app retrieved the gold chunk, and up/down buttons. Grades
 persist in the browser (localStorage), and a "Download graded JSONL" button writes
 them back into the rows' `grade` field so you end up with the graded document.
@@ -98,7 +98,7 @@ def render_card(row: dict) -> str:
   </div>
   <p class="question">{html.escape(row['question'])}</p>
   <div class="cols">
-    <div class="col ref"><h3>Reference (Opus)</h3><div>{br(row['reference_answer'])}</div></div>
+    <div class="col ref"><h3>Reference</h3><div>{br(row['reference_answer'])}</div></div>
     <div class="col rag"><h3>RAG answer</h3><div>{br(row['rag_answer'])}</div></div>
   </div>
 </section>"""

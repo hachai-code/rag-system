@@ -2,5 +2,5 @@
   "name": "multi_query",
   "retrieval": {"top_k": 5, "relevance_threshold": 0.7, "method": "rerank", "query_enhancement": "multi_query", "parent_document": false},
   "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash", "prompt_file": null, "format": "claims"},
-  "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro"}
+  "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash"}
 }

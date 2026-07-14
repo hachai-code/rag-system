@@ -1,6 +1,6 @@
 """End-to-end answer dataset for the innerdance RAG, for hand-grading.
 
-For each random chunk: Sonnet writes a question the chunk answers, Opus writes the
+For each random chunk: DeepSeek V4 Flash writes a question the chunk answers and the
 reference ("correct") answer from that chunk, and the actual RAG app answers the
 same question over the full corpus. Each row is written with an empty `grade` for
 you to fill in by hand — compare `rag_answer` to `reference_answer` and mark it.
@@ -10,9 +10,9 @@ search/ covers retrieval alone. The reference is grounded in the gold chunk,
 and `retrieved_gold` records whether the app actually retrieved that chunk — so when
 an answer is bad you can tell a retrieval miss from a generation failure.
 
-Models: Sonnet writes questions; Opus writes the reference (strongest model = most
-trustworthy gold); the app answers with its own model. No judge model — grading is
-yours.
+Models: Flash writes both questions and references (cost-driven; the reference is
+grounded in the gold chunk, which does the heavy lifting); the app answers with its
+own model. No judge model — grading is yours.
 
 Runs are resumable: each row is appended and flushed as it completes, so a crash
 loses at most the in-flight item. Re-running tops the file up to N, skipping chunks
@@ -22,21 +22,23 @@ Run: uv run python -m evals.answer.eval_answers [n]
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
-import anthropic
 import psycopg
+from openai import OpenAI
 
-from rag import RELEVANCE_THRESHOLD, answer, search
+from rag import OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, answer, search
+from rag.config import CONFIG
 from rag.db import connect
 
 OUT_FILE = Path(__file__).parent / "data" / "answer_feedback.jsonl"
-N_ITEMS = 25  # each item is a Sonnet + an Opus + the app's own call, so the default is modest
+N_ITEMS = 25  # each item is two Flash calls + the app's own call, so the default is modest
 PER_DOC = 10
 MIN_CHARS = 300
-GEN_MODEL = "claude-sonnet-4-6"
-REF_MODEL = "claude-opus-4-8"
+GEN_MODEL = CONFIG.gen_models["flash"]
+REF_MODEL = CONFIG.gen_models["flash"]
 # Mirrors app.py's no-answer gate so the eval exercises the same refusal behaviour
 # the API would. Replicated rather than imported from app.py to keep the FastAPI app
 # and its Langfuse instrumentation out of an offline eval.
@@ -81,20 +83,22 @@ def candidate_chunks(conn: psycopg.Connection, per_doc: int) -> list[dict]:
     ).fetchall()
 
 
-def make_question(client: anthropic.Anthropic, content: str) -> str:
-    response = client.messages.create(
-        model=GEN_MODEL, max_tokens=100, system=GEN_PROMPT,
-        messages=[{"role": "user", "content": content}],
+def make_question(client: OpenAI, content: str) -> str:
+    response = client.chat.completions.create(
+        model=GEN_MODEL, max_tokens=100,
+        messages=[{"role": "system", "content": GEN_PROMPT},
+                  {"role": "user", "content": content}],
     )
-    return "".join(block.text for block in response.content).strip()
+    return response.choices[0].message.content.strip()
 
 
-def reference_answer(client: anthropic.Anthropic, question: str, content: str) -> str:
-    response = client.messages.create(
-        model=REF_MODEL, max_tokens=512, system=REF_PROMPT,
-        messages=[{"role": "user", "content": f"Passage:\n{content}\n\nQuestion: {question}"}],
+def reference_answer(client: OpenAI, question: str, content: str) -> str:
+    response = client.chat.completions.create(
+        model=REF_MODEL, max_tokens=512,
+        messages=[{"role": "system", "content": REF_PROMPT},
+                  {"role": "user", "content": f"Passage:\n{content}\n\nQuestion: {question}"}],
     )
-    return "".join(block.text for block in response.content).strip()
+    return response.choices[0].message.content.strip()
 
 
 def rag_answer(conn: psycopg.Connection, question: str) -> tuple[str, list[dict]]:
@@ -118,7 +122,8 @@ def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else N_ITEMS
     # max_retries above the default 2 gives the question/reference calls extra headroom
     # on transient 429/5xx during a long run (the RAG answer call retries on its own).
-    client = anthropic.Anthropic(max_retries=4)
+    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"],
+                    max_retries=4)
     rows = existing_rows()
     done = {r["source"]["chunk_id"] for r in rows}
 

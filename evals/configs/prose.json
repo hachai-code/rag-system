@@ -2,5 +2,5 @@
   "name": "prose",
   "retrieval": {"top_k": 5, "relevance_threshold": 0.7, "method": "rerank"},
   "generation": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash", "prompt_file": null, "format": "prose"},
-  "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-pro"}
+  "judge": {"provider": "openai-compat", "model": "deepseek/deepseek-v4-flash"}
 }

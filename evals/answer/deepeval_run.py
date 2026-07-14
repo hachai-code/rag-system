@@ -1,15 +1,15 @@
-"""DeepEval RAG-triad metrics over the innerdance eval set, judged by DeepSeek V4 Pro.
+"""DeepEval RAG-triad metrics over the innerdance eval set, judged by DeepSeek V4 Flash.
 
-Additive to the A-F rubric judges (answer/judge.py): those stay binary and
-Anthropic-Opus-judged; this adds the standard continuous RAG-triad scores DeepEval
-gives off the shelf — faithfulness, answer relevancy, and contextual
-relevancy/precision/recall — each a 0-1 score + a one-line reason.
+Additive to the A-F rubric judges (answer/judge.py): those stay binary; this adds
+the standard continuous RAG-triad scores DeepEval gives off the shelf —
+faithfulness, answer relevancy, and contextual relevancy/precision/recall — each a
+0-1 score + a one-line reason.
 
 Answers come from the live RAG (search -> relevance gate -> generate), exactly as
 app.py's /ask, so a run exercises retrieval + generation end to end. Every eval item
 has an ideal_answer, so the two reference-based metrics (precision, recall) run on all.
 
-The judge is DeepSeek V4 Pro. DeepEval's built-in DeepSeekModel only knows model IDs
+The judge is DeepSeek V4 Flash. DeepEval's built-in DeepSeekModel only knows model IDs
 up to v3.x, so we wrap DeepSeek's OpenAI-compatible endpoint with instructor (already
 a project dep) — schema-validated output with retries, and it sidesteps that stale
 model-ID table.
@@ -43,11 +43,11 @@ from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "deepeval_results.jsonl"
-JUDGE_MODEL = "deepseek-v4-pro"
+JUDGE_MODEL = "deepseek-v4-flash"
 
 
 class DeepSeekJudge(DeepEvalBaseLLM):
-    """DeepSeek V4 Pro as a DeepEval judge, via its OpenAI-compatible endpoint + instructor."""
+    """DeepSeek V4 Flash as a DeepEval judge, via its OpenAI-compatible endpoint + instructor."""
 
     def __init__(self, model: str = JUDGE_MODEL):
         self.model_name = model

@@ -6,9 +6,11 @@ can't bleed into another and we can track per-dimension accuracy. Each verdict i
 PASS/FAIL plus a one-sentence rationale — the rationale is the whole point, it's how
 you debug a judge that disagrees with you.
 
-Opus is the judge on purpose: a weak judge is worse than no judge, because it gives
-you numbers you can't trust. The judged answers come from the live RAG, so this also
-exercises retrieval + generation end to end against the human eval set.
+Judge model is DeepSeek V4 Flash, chosen for cost. Known trade-off: it also writes
+the answers (self-agreement bias) and is a weak judge — the per-verdict rationales
+and the human labels (judge_vs_human.py) are the check on it. The judged answers come
+from the live RAG, so this also exercises retrieval + generation end to end against
+the human eval set.
 
 Structured output via instructor + Pydantic (instructor.Mode.TOOLS uses Anthropic's
 tool-calling to fill the model), so a verdict either parses into `Verdict` or retries.
@@ -19,6 +21,7 @@ Run: uv run python -m evals.answer.judge [n]
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -26,17 +29,34 @@ import instructor
 import psycopg
 from pydantic import BaseModel, Field
 
-from rag import RELEVANCE_THRESHOLD, answer, search
+from rag import OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, answer, search
+from rag.config import CONFIG
 from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
-JUDGE_MODEL = "claude-opus-4-8"  # Opus-class: a weak judge is worse than no judge
+JUDGE_MODEL = CONFIG.gen_models["flash"]  # cost-driven; validated against human labels
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
 # Sentinel for a hard model refusal (stop_reason="refusal"): the API returns no text,
 # so there is nothing to judge against the rubric. Items 70-F/74-E hit this — we record
 # the refusal as the answer so the row produces a verdict instead of crashing.
 REFUSED = "[hard refusal: the model declined to answer]"
+
+
+def judge_client(provider: str, model: str):
+    """Build the instructor judge client for the configured provider: Anthropic native,
+    or an OpenAI-compatible model (e.g. DeepSeek V4 Flash via OpenRouter). Both fill the
+    Verdict via structured output, so callers don't care which they got."""
+    if provider == "openai-compat":
+        # Mode.JSON, not TOOLS: DeepSeek on OpenRouter is unreliable at tool-calling, so
+        # ask for the Verdict as JSON in the content (matches the generation path in rag.py).
+        return instructor.from_provider(
+            f"openai/{model}",
+            base_url=OPENROUTER_BASE_URL,
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            mode=instructor.Mode.JSON,
+        )
+    return instructor.from_provider(f"anthropic/{model}", mode=instructor.Mode.TOOLS)
 
 
 class Verdict(BaseModel):
@@ -63,15 +83,15 @@ RUBRICS = {
     ),
     "C": (
         "Generation Quality",
-        "Does the response genuinely synthesize the material into a coherent answer fit for the user's intent, rather than parroting the corpus or mishandling the task type?",
-        "Reasons over and integrates the content into a clear, original synthesis; handles creative/'make a content piece' requests generatively while staying grounded.",
-        "Repeats corpus text near-verbatim without understanding, is disjointed/confusing, or treats a generative request as a flat lookup.",
+        "Does the response genuinely synthesize the material into a coherent answer at the depth the question deserves, rather than parroting the corpus, mishandling the task type, or under-generating?",
+        "Reasons over and integrates the content into a clear, original synthesis at appropriate depth; handles creative/'make a content piece' requests generatively while staying grounded.",
+        "Repeats corpus text near-verbatim without understanding, is disjointed/confusing, treats a generative request as a flat lookup, or is over-generalized/cut short as if truncated (under-generation).",
     ),
     "D": (
-        "Grounding & Factual Validation",
-        "Are factual claims — especially neuroscience/physiology claims — grounded in the corpus or a vetted source, or appropriately hedged rather than stated as unverified fact?",
-        "Falsifiable claims are grounded or clearly framed as the innerdance teaching rather than established science; adds helpful external context where useful.",
-        "States unverified neuro/medical claims as settled fact, or omits helpful external context where the corpus alone is insufficient.",
+        "Grounding, Provenance & Factual Validation",
+        "Are factual claims — especially neuroscience/physiology claims — grounded in the corpus or a vetted source, or appropriately hedged rather than stated as unverified fact? And does the answer distinguish the innerdance framework's own teaching from the supplementary neuroscience book it draws on?",
+        "Falsifiable claims are grounded or clearly framed as the innerdance teaching rather than established science; book-derived material is attributed to the book, not presented as framework teaching; adds helpful external context where useful.",
+        "States unverified neuro/medical claims as settled fact, presents the supplementary book's material as innerdance framework teaching (or vice versa), or omits helpful external context where the corpus alone is insufficient.",
     ),
     "E": (
         "Formatting & Conventions",
@@ -150,7 +170,7 @@ def existing_ids() -> set[int]:
 def main() -> None:
     items = eval_items()
     n = int(sys.argv[1]) if len(sys.argv) > 1 else len(items)
-    client = instructor.from_provider(f"anthropic/{JUDGE_MODEL}", mode=instructor.Mode.TOOLS)
+    client = judge_client("openai-compat", JUDGE_MODEL)
     done = existing_ids()
 
     with connect() as conn, OUT_FILE.open("a") as out:
