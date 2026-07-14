@@ -99,6 +99,26 @@ export interface EvalsSummary {
   } | null;
 }
 
+// Returned by GET /evals/run/{run_id}: one row per judged question, with the
+// per-dimension PASS/FAIL and the judge's rationale for each.
+export interface EvalResultRow {
+  question_id: number;
+  question: string;
+  answer: string;
+  split: string | null;
+  scores: Record<string, boolean>;
+  rationales: Record<string, string>;
+}
+
+export interface EvalRunDetail {
+  run_id: number;
+  created_at: string;
+  git_sha: string;
+  config_name: string | null;
+  config_hash: string | null;
+  results: EvalResultRow[];
+}
+
 // Returned by GET /source/{chunk_id}: the cited chunk in its document context.
 export interface SourcePassage {
   title: string;

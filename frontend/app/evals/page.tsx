@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import type { EvalsSummary } from "@/lib/types";
 import { API_URL } from "@/lib/api";
+import { RunDetail } from "../_components/RunDetail";
 
 // Categorical palette (dataviz reference instance, CVD-validated): one fixed
 // slot per rubric dimension so a dimension keeps its hue across all charts and
@@ -63,6 +64,7 @@ function Section({ title, sub, children }: { title: string; sub: string; childre
 export default function EvalsPage() {
   const [data, setData] = useState<EvalsSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openRun, setOpenRun] = useState<number | null>(null);
 
   useEffect(() => {
     fetch(`${API_URL}/evals/summary`)
@@ -159,6 +161,28 @@ export default function EvalsPage() {
             {!final?.test && <p className="mt-2 text-sm text-gray-500">No test-split run for the final config yet.</p>}
           </>
         )}
+      </Section>
+
+      <Section title="Runs" sub="Click a run to read the judge's per-question rationales.">
+        <div className="divide-y divide-gray-100 dark:divide-gray-800">
+          {[...runs].reverse().map((r) => (
+            <button
+              key={r.run_id}
+              onClick={() => setOpenRun(openRun === r.run_id ? null : r.run_id)}
+              className={`flex w-full items-center gap-3 px-1 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-900 ${
+                openRun === r.run_id ? "font-medium" : ""
+              }`}
+            >
+              <span className="font-mono text-xs text-gray-400">#{r.run_id}</span>
+              <span className="text-gray-500">{r.created_at.slice(0, 10)}</span>
+              <span className="text-gray-400">n={r.n}</span>
+              <span className="ml-auto font-mono text-xs text-gray-400">
+                {dims.filter((d) => d in r.pass_rate).map((d) => `${d} ${pct(r.pass_rate[d])}`).join("  ")}
+              </span>
+            </button>
+          ))}
+        </div>
+        {openRun !== null && <RunDetail key={openRun} runId={openRun} onClose={() => setOpenRun(null)} />}
       </Section>
     </main>
   );

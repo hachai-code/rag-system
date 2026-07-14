@@ -15,7 +15,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from rag.db import connect
@@ -53,6 +53,24 @@ class FinalConfig(BaseModel):
 class EvalsSummary(BaseModel):
     runs: list[RunSummary]
     final: FinalConfig | None
+
+
+class ResultRow(BaseModel):
+    question_id: int
+    question: str
+    answer: str
+    split: str | None
+    scores: dict[str, bool]
+    rationales: dict[str, str]
+
+
+class RunDetail(BaseModel):
+    run_id: int
+    created_at: datetime
+    git_sha: str
+    config_name: str | None
+    config_hash: str | None
+    results: list[ResultRow]
 
 
 def _split_map() -> dict[int, str]:
@@ -135,3 +153,32 @@ def evals_summary() -> EvalsSummary:
                 break
 
     return EvalsSummary(runs=runs, final=final)
+
+
+@router.get("/evals/run/{run_id}")
+def evals_run(run_id: int) -> RunDetail:
+    with connect() as conn:
+        run = conn.execute(
+            """SELECT id, created_at, git_sha,
+                      config->>'name' AS config_name, config->>'hash' AS config_hash
+               FROM eval_runs WHERE id = %s""",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"no eval run {run_id}")
+        rows = conn.execute(
+            """SELECT question_id, question, answer, scores, rationales
+               FROM eval_results WHERE run_id = %s ORDER BY question_id""",
+            (run_id,),
+        ).fetchall()
+    splits = _split_map()
+    return RunDetail(
+        run_id=run["id"], created_at=run["created_at"], git_sha=run["git_sha"],
+        config_name=run["config_name"], config_hash=run["config_hash"],
+        results=[
+            ResultRow(question_id=r["question_id"], question=r["question"],
+                      answer=r["answer"], split=splits.get(r["question_id"]),
+                      scores=r["scores"], rationales=r["rationales"])
+            for r in rows
+        ],
+    )
