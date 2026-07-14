@@ -21,7 +21,8 @@ import time
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
-    EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, judge_client, rag_answer,
+    EVAL_FILE, JUDGE_MODEL, REASONING_OFF, RUBRICS, SYSTEM, Verdict, eval_items,
+    judge_client, rag_answer,
 )
 from rag import GEN_MODEL, RELEVANCE_THRESHOLD, TOP_K
 from rag.db import connect
@@ -38,9 +39,10 @@ def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: 
     if ideal:
         user += f"\n\nReference answer (ground truth):\n{ideal}"
     verdict, completion = client.create_with_completion(
-        max_tokens=300,
+        max_tokens=1000,
         max_retries=2,
         response_model=Verdict,
+        extra_body=REASONING_OFF,
         messages=[
             {"role": "system", "content": SYSTEM.format(
                 name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def)},

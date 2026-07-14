@@ -36,6 +36,11 @@ from rag.db import connect
 EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
 JUDGE_MODEL = CONFIG.gen_models["flash"]  # cost-driven; validated against human labels
+# Flash is a reasoning model; left on, it can spend the whole max_tokens budget
+# thinking and return an empty verdict (IncompleteOutputException). A one-sentence
+# PASS/FAIL doesn't need chain-of-thought. OpenRouter unified param:
+# https://openrouter.ai/docs/use-cases/reasoning-tokens
+REASONING_OFF = {"reasoning": {"effort": "none"}}
 NO_ANSWER = "I don't have information on that in the innerdance corpus."
 # Sentinel for a hard model refusal (stop_reason="refusal"): the API returns no text,
 # so there is nothing to judge against the rubric. Items 70-F/74-E hit this — we record
@@ -135,9 +140,10 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
     if ideal:
         user += f"\n\nReference answer (ground truth):\n{ideal}"
     return client.create(
-        max_tokens=300,
+        max_tokens=1000,
         max_retries=2,  # instructor re-asks the model if the output doesn't parse to Verdict
         response_model=Verdict,
+        extra_body=REASONING_OFF,
         messages=[
             {"role": "system", "content": SYSTEM.format(
                 name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def)},

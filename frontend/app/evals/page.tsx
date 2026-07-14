@@ -76,7 +76,8 @@ export default function EvalsPage() {
   if (data.runs.length === 0)
     return (
       <main className="mx-auto max-w-4xl px-4 py-10">
-        No eval runs yet — <code>uv run python -m evals.run --config evals/configs/baseline.json</code>
+        No full eval runs yet (partial <code>--limit</code> runs are hidden) —{" "}
+        <code>uv run python -m evals.run --config evals/configs/baseline.json --split dev</code>
       </main>
     );
 

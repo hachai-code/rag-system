@@ -80,12 +80,22 @@ def evals_summary() -> EvalsSummary:
                FROM eval_runs r JOIN eval_results e ON e.run_id = r.id
                ORDER BY r.created_at, r.id"""
         ).fetchall()
-    if not rows:
-        return EvalsSummary(runs=[], final=None)
+    splits = _split_map()
 
     by_run: dict[int, list[dict]] = defaultdict(list)
     for r in rows:
         by_run[r["run_id"]].append(r)
+
+    # Only full runs: --limit smoke runs (a handful of judged items) chart as noise.
+    # Full = judged >= 90% of the smallest split, mirroring check_regression's
+    # MIN_COMPLETE headroom for items skipped on transient API errors.
+    split_sizes = defaultdict(int)
+    for s in splits.values():
+        split_sizes[s] += 1
+    full_min = 0.9 * min(split_sizes.values())
+    by_run = {run_id: rs for run_id, rs in by_run.items() if len(rs) >= full_min}
+    if not by_run:
+        return EvalsSummary(runs=[], final=None)
 
     runs = [
         RunSummary(
@@ -112,7 +122,6 @@ def evals_summary() -> EvalsSummary:
         if (rs[0]["config_hash"] or rs[0]["config_name"] or rs[0]["run_id"])
         == (last.config_hash or last.config_name or last.run_id)
     ]
-    splits = _split_map()
     final = FinalConfig(config_name=last.config_name, config_hash=last.config_hash,
                         dev=None, test=None)
     for split in ("dev", "test"):
