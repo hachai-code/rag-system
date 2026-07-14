@@ -28,13 +28,13 @@ from langfuse import get_client
 from langfuse.openai import OpenAI
 from pydantic import BaseModel, Field
 
+from ..clients import OPENROUTER_BASE_URL
 from ..config import CONFIG
 
 # --- Config ------------------------------------------------------------------
 
 MODEL = CONFIG.gen_model
 MAX_TOKENS = CONFIG.max_tokens
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 MAX_ITERATIONS = 10
@@ -244,6 +244,37 @@ def _cited_urls(answer: str) -> set[str]:
     return {u.rstrip(".,;:").rstrip("/") for u in _MD_LINK_RE.findall(answer)}
 
 
+def _limit_hit(iterations: int, cost_spent: float, elapsed: float) -> str | None:
+    """Name of the first exhausted budget, or None while within all three.
+    Shared with the LangGraph rebuild (web_search_graph_agent.py)."""
+    if iterations >= MAX_ITERATIONS:
+        return "iterations"
+    if cost_spent >= MAX_COST_USD:
+        return "cost"
+    if elapsed >= MAX_SECONDS:
+        return "time"
+    return None
+
+
+def _rejected_citations(draft: str, sources: set[str],
+                        citation_retries: int) -> tuple[list[str], str | None]:
+    """([], None) when the draft's citations are acceptable (or retries are spent);
+    otherwise the unseen URLs and the rewrite instruction to send back. Logs the
+    rejection. Shared with the LangGraph rebuild."""
+    unknown = sorted(_cited_urls(draft) - sources)
+    if not unknown or citation_retries >= MAX_CITATION_RETRIES:
+        return [], None
+    print(f"!! rejected: cites unseen URLs {unknown}")
+    get_client().create_event(name="citation-rejected", input=unknown)
+    return unknown, (
+        "Your answer cites URLs that never appeared in your "
+        f"research: {unknown}. Every citation must be "
+        "a URL from your search results or fetched pages. "
+        "Rewrite the answer, removing or replacing those "
+        "citations."
+    )
+
+
 class Step(BaseModel):
     """One executed tool call, as the model requested it."""
 
@@ -270,13 +301,7 @@ class AgentState(BaseModel):
 
     def limit_hit(self) -> str | None:
         """Name of the first exhausted budget, or None while within all three."""
-        if self.iterations >= MAX_ITERATIONS:
-            return "iterations"
-        if self.cost_spent >= MAX_COST_USD:
-            return "cost"
-        if self.elapsed >= MAX_SECONDS:
-            return "time"
-        return None
+        return _limit_hit(self.iterations, self.cost_spent, self.elapsed)
 
     def record(self, step: Step) -> None:
         """Append the step and absorb its URLs into the run's known sources."""
@@ -287,8 +312,10 @@ class AgentState(BaseModel):
 # --- Loop ----------------------------------------------------------------------
 
 
-def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
-    """One bounded no-tools call: answer from the research gathered so far."""
+def _best_effort_answer(client: OpenAI, model: str, messages: list, limit: str) -> str:
+    """One bounded no-tools call: answer from the research gathered so far.
+    Shared with the LangGraph rebuild; `model` is passed in because each agent
+    module's MODEL is monkeypatched per eval run."""
     stop_msg = {
         "role": "user",
         "content": "Stop researching. Do not call any tools. Answer the original "
@@ -298,7 +325,7 @@ def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
     for _ in range(3):
         try:
             resp = client.chat.completions.create(
-                model=MODEL, max_tokens=MAX_TOKENS, messages=messages + [stop_msg],
+                model=model, max_tokens=MAX_TOKENS, messages=messages + [stop_msg],
             )
         except Exception:
             break
@@ -311,7 +338,7 @@ def _best_effort_answer(client: OpenAI, messages: list, limit: str) -> str:
         # salvage: the model's last substantive narration beats a shrug
         for m in reversed(messages):
             role = m["role"] if isinstance(m, dict) else m.role
-            content = (m["content"] if isinstance(m, dict) else m.content) or ""
+            content = (m.get("content") if isinstance(m, dict) else m.content) or ""
             if role == "assistant" and content:
                 answer = content.split("<｜")[0].strip()
                 if answer:
@@ -341,7 +368,7 @@ def run_agent(question: str) -> str:
         while True:
             limit = state.limit_hit()
             if limit:
-                answer = _best_effort_answer(client, messages, limit)
+                answer = _best_effort_answer(client, MODEL, messages, limit)
                 break
 
             state.iterations += 1
@@ -358,19 +385,11 @@ def run_agent(question: str) -> str:
                     print("~> self-critique pass")
                     messages.append({"role": "user", "content": CRITIQUE_PROMPT})
                     continue
-                unknown = _cited_urls(msg.content) - state.sources
-                if unknown and state.citation_retries < MAX_CITATION_RETRIES:
+                _, rejection = _rejected_citations(
+                    msg.content, state.sources, state.citation_retries)
+                if rejection:
                     state.citation_retries += 1
-                    print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
-                    get_client().create_event(name="citation-rejected", input=sorted(unknown))
-                    messages.append({
-                        "role": "user",
-                        "content": "Your answer cites URLs that never appeared in your "
-                                   f"research: {sorted(unknown)}. Every citation must be "
-                                   "a URL from your search results or fetched pages. "
-                                   "Rewrite the answer, removing or replacing those "
-                                   "citations.",
-                    })
+                    messages.append({"role": "user", "content": rejection})
                     continue
                 answer = msg.content
                 break

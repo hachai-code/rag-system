@@ -10,9 +10,9 @@ import os
 import anthropic
 import instructor
 from instructor.core import IncompleteOutputException
-from openai import OpenAI
 from pydantic import BaseModel
 
+from ..clients import OPENROUTER_BASE_URL, openrouter_client
 from ..config import CONFIG
 
 # Provider seam: which adapter answer() dispatches to and which model it runs, both
@@ -24,7 +24,6 @@ GEN_MODELS = CONFIG.gen_models
 # "prose" (one synthesized answer, chunks shown as proof) or "claims" (structured,
 # per-sentence citations). Only affects the openai-compat path; anthropic is always prose.
 ANSWER_FORMAT = CONFIG.answer_format
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MAX_TOKENS = CONFIG.max_tokens
 # The structured (JSON claims) response runs longer than raw prose (~2.5k tokens for a
@@ -50,7 +49,7 @@ def complete(prompt: str, model: str) -> str:
     """A bare OpenAI-compatible completion returning raw text — the lightweight
     counterpart to answer() for auxiliary generation (HyDE hypotheticals, multi-query
     paraphrases) that needs no citation scaffolding. Runs the same OpenRouter seam."""
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    client = openrouter_client()
     resp = client.chat.completions.create(
         model=model,
         max_tokens=MAX_TOKENS,
@@ -133,7 +132,7 @@ def answer_prose(question: str, hits: list[dict],
     No structured schema — a raw completion is what makes the model write flowing
     prose instead of the per-sentence claims of the GroundedAnswer path. The proof is
     the retrieved chunks; grounding is by the prompt, not by construction."""
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    client = openrouter_client()
     # ponytail: STRUCTURED_MAX_TOKENS ceiling; if OpenRouter truncates a long answer
     # the text just comes back short (finish_reason="length"), raise the cap if it bites.
     resp = client.chat.completions.create(
@@ -264,7 +263,7 @@ def answer_stream(question: str, hits: list[dict],
         return
 
     # Prose: token-stream the raw completion, then the retrieved chunks as proof.
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    client = openrouter_client()
     stream = client.chat.completions.create(
         model=model,
         max_tokens=STRUCTURED_MAX_TOKENS,

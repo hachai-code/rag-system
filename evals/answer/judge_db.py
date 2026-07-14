@@ -20,15 +20,13 @@ import sys
 import time
 
 import instructor
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
     EVAL_FILE, JUDGE_MODEL, RUBRICS, SYSTEM, Verdict, eval_items, rag_answer,
 )
-from rag import DB_URL, GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
+from rag import GEN_MODEL, OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, TOP_K
+from rag.db import connect
 
 # Judge token price (DeepSeek V4 Pro on OpenRouter): $0.435 / $0.87 per 1M in/out.
 IN_PRICE, OUT_PRICE = 0.435 / 1_000_000, 0.87 / 1_000_000
@@ -94,8 +92,7 @@ def main() -> None:
         "relevance_threshold": RELEVANCE_THRESHOLD,
     }
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         run_id = conn.execute(
             "INSERT INTO eval_runs (git_sha, config) VALUES (%s, %s) RETURNING id",
             (git_sha(), Jsonb(config)),

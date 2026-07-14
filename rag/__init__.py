@@ -8,12 +8,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from rag.clients import OPENROUTER_BASE_URL
 from rag.db import DB_URL
 from rag.query.answer import (
     ANSWER_FORMAT,
     GEN_MODEL,
     GEN_PROVIDER,
-    OPENROUTER_BASE_URL,
     STRUCTURED_MAX_TOKENS,
     SYSTEM_PROMPT,
     Claim,

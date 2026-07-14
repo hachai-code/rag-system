@@ -28,16 +28,15 @@ from typing import Literal
 import httpx
 import instructor
 from dotenv import load_dotenv
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parents[2] / ".env")
 
+from rag.clients import openrouter_client
 from rag.config import CONFIG
 from rag.query.web_search_agent import _cited_urls
 
 JUDGE_MODEL = CONFIG.gen_models["flash"]
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 METRICS = Path(__file__).parent / "analysis" / "baseline_metrics.json"
 NO_ANSWER = "Could not produce an answer."
 
@@ -219,10 +218,7 @@ def main(tag: str = "") -> None:
     data = Path(__file__).parent / "data"
     results = data / (f"results_{tag}.jsonl" if tag else "results.jsonl")
     judgments_path = data / (f"judgments_{tag}.jsonl" if tag else "judgments.jsonl")
-    client = instructor.from_openai(
-        OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"]),
-        mode=instructor.Mode.TOOLS,
-    )
+    client = instructor.from_openai(openrouter_client(), mode=instructor.Mode.TOOLS)
     rows = [json.loads(line) for line in results.open()]
     judged = {}
     if judgments_path.exists():

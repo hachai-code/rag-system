@@ -21,22 +21,22 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
+from ..clients import OPENROUTER_BASE_URL
 from ..config import CONFIG
 from .web_search_agent import (
     CRITIQUE_PROMPT,
     DISTILL_OVER_TOKENS,
-    MAX_CITATION_RETRIES,
-    MAX_COST_USD,
     MAX_ITERATIONS,
     MAX_SECONDS,
     MAX_TOKENS,
-    OPENROUTER_BASE_URL,
     SYSTEM_PROMPT,
     TOOLS,
-    _cited_urls,
+    _best_effort_answer,
     _distill,
     _encoder,
     _execute_tool,
+    _limit_hit,
+    _rejected_citations,
     _urls_in,
 )
 
@@ -72,13 +72,8 @@ class AgentState(TypedDict):
 
 def limit_hit(state: AgentState) -> str | None:
     """Name of the first exhausted budget, or None while within all three."""
-    if state["iterations"] >= MAX_ITERATIONS:
-        return "iterations"
-    if state["cost_spent"] >= MAX_COST_USD:
-        return "cost"
-    if time.monotonic() - state["started"] >= MAX_SECONDS:
-        return "time"
-    return None
+    return _limit_hit(state["iterations"], state["cost_spent"],
+                      time.monotonic() - state["started"])
 
 
 # --- Nodes ---------------------------------------------------------------------
@@ -174,21 +169,12 @@ def review(state: AgentState) -> dict:
             "messages": [{"role": "user", "content": CRITIQUE_PROMPT}],
             "critiqued": True,
         }
-    unknown = _cited_urls(draft) - state["sources"]
-    if unknown and state["citation_retries"] < MAX_CITATION_RETRIES:
-        print(f"!! rejected: cites unseen URLs {sorted(unknown)}")
-        writer({"type": "critique", "verdict": "rejected_citations",
-                "urls": sorted(unknown)})
-        get_client().create_event(name="citation-rejected", input=sorted(unknown))
+    unknown, rejection = _rejected_citations(
+        draft, state["sources"], state["citation_retries"])
+    if rejection:
+        writer({"type": "critique", "verdict": "rejected_citations", "urls": unknown})
         return {
-            "messages": [{
-                "role": "user",
-                "content": "Your answer cites URLs that never appeared in your "
-                           f"research: {sorted(unknown)}. Every citation must be "
-                           "a URL from your search results or fetched pages. "
-                           "Rewrite the answer, removing or replacing those "
-                           "citations.",
-            }],
+            "messages": [{"role": "user", "content": rejection}],
             "citation_retries": state["citation_retries"] + 1,
         }
     writer({"type": "critique", "verdict": "accepted"})
@@ -200,35 +186,8 @@ def best_effort(state: AgentState) -> dict:
     get_stream_writer()({"type": "step_started", "node": "best_effort",
                          "iteration": state["iterations"]})
     limit = limit_hit(state) or "unknown"
-    stop_msg = {
-        "role": "user",
-        "content": "Stop researching. Do not call any tools. Answer the original "
-                   "question in plain prose, based only on what you have found so far.",
-    }
-    answer = ""
-    for _ in range(3):
-        try:
-            resp = _client().chat.completions.create(
-                model=MODEL, max_tokens=MAX_TOKENS,
-                messages=state["messages"] + [stop_msg],
-            )
-        except Exception:
-            break
-        # DeepSeek sometimes leaks raw "<｜DSML｜tool_calls>" markup as text when
-        # told to stop mid-research; everything from the special token on is garbage
-        answer = (resp.choices[0].message.content or "").split("<｜")[0].strip()
-        if answer:
-            break
-    if not answer:
-        # salvage: the model's last substantive narration beats a shrug
-        for m in reversed(state["messages"]):
-            if m["role"] == "assistant" and m.get("content"):
-                answer = m["content"].split("<｜")[0].strip()
-                if answer:
-                    break
     return {
-        "answer": (f"{answer or 'Could not produce an answer.'}"
-                   f"\n\n[Note: stopped early — {limit} limit reached]"),
+        "answer": _best_effort_answer(_client(), MODEL, state["messages"], limit),
         "limit": limit,
     }
 

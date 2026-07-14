@@ -13,9 +13,9 @@ from pathlib import Path
 import fitz
 from openai import OpenAI
 
+from .clients import openrouter_client
 from .config import CONFIG
 from .indexing.ingest import CORPUS_ROOT
-from .query.answer import OPENROUTER_BASE_URL
 
 IMAGE_PDFS = ["Mandala.pdf", "Epilepsy and Brain Maps.pdf"]
 MAX_EDGE = 1600  # px long edge; keeps each page image well under model input limits
@@ -59,7 +59,7 @@ def ocr_pdf(client: OpenAI, path: Path) -> str:
 def main() -> None:
     if not os.environ.get("OPENROUTER_API_KEY"):
         raise SystemExit("OPENROUTER_API_KEY is not set. Add it to .env or export it.")
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
+    client = openrouter_client()
     for name in IMAGE_PDFS:
         pdf = CORPUS_ROOT / "Documents" / name
         print(f"OCR {name} with {CONFIG.ocr_model} ...")

@@ -27,10 +27,9 @@ from pathlib import Path
 
 import anthropic
 import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 
-from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
+from rag import RELEVANCE_THRESHOLD, answer, search
+from rag.db import connect
 
 OUT_FILE = Path(__file__).parent / "data" / "answer_feedback.jsonl"
 N_ITEMS = 25  # each item is a Sonnet + an Opus + the app's own call, so the default is modest
@@ -123,8 +122,7 @@ def main() -> None:
     rows = existing_rows()
     done = {r["source"]["chunk_id"] for r in rows}
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn, OUT_FILE.open("a") as out:
-        register_vector(conn)
+    with connect() as conn, OUT_FILE.open("a") as out:
         for chunk in candidate_chunks(conn, PER_DOC):
             if len(rows) >= n:
                 break

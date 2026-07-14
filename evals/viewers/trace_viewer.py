@@ -22,15 +22,13 @@ import json
 import sys
 from pathlib import Path
 
-import psycopg
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 
 from evals.answer.judge import NO_ANSWER
-from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
+from rag import RELEVANCE_THRESHOLD, answer, search
+from rag.db import connect
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"
@@ -62,8 +60,7 @@ def pull() -> None:
     if not todo:
         print(f"{TRACES}: already complete ({len(done)} traces)")
         return
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn, TRACES.open("a") as out:
-        register_vector(conn)
+    with connect() as conn, TRACES.open("a") as out:
         for q in todo:
             trace = pull_trace(conn, q["question"])
             out.write(json.dumps({"id": q["id"], "question": q["question"], **trace, "note": ""},

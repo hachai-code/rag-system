@@ -24,9 +24,8 @@ from pathlib import Path
 
 import anthropic
 import psycopg
-from psycopg.rows import dict_row
 
-from rag import DB_URL
+from rag.db import connect
 
 OUT_FILE = Path(__file__).parent / "data" / "synthetic_questions.jsonl"
 N_QUESTIONS = 50
@@ -83,7 +82,7 @@ def make_question(client: anthropic.Anthropic, content: str) -> str:
 def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else N_QUESTIONS
     client = anthropic.Anthropic()
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
+    with connect() as conn:
         candidates = candidate_chunks(conn, PER_DOC)
 
     rows: list[dict] = []

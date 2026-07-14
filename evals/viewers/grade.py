@@ -16,11 +16,8 @@ import html
 import json
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
-
-from rag import DB_URL, search
+from rag import search
+from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "grade.html"
@@ -122,8 +119,7 @@ def render_card(row: dict, hits: list[dict]) -> str:
 def main() -> None:
     rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
     cards = []
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         for row in rows:
             hits = search(conn, row["question"])
             cards.append(render_card(row, hits))

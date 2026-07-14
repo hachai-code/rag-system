@@ -36,9 +36,9 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.store.postgres import PostgresStore
 from psycopg.rows import dict_row
 
+from ..clients import OPENROUTER_BASE_URL
 from ..config import CONFIG
 from ..db import DB_URL, connect
-from .answer import OPENROUTER_BASE_URL
 from .retrieve import EMBED_DIM, VOYAGE_MODEL, _voyage, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,

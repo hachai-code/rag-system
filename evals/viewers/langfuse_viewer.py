@@ -20,16 +20,14 @@ import json
 import sys
 from pathlib import Path
 
-import psycopg
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from langfuse import get_client
-from psycopg.rows import dict_row
 
 from evals.viewers.trace_viewer import HTML, load  # same open-coding UI, different data source
-from rag import DB_URL
+from rag.db import connect
 
 load_dotenv()
 HERE = Path(__file__).parent
@@ -68,7 +66,7 @@ def pull() -> None:
     if not traces:
         print(f"{TRACES}: already complete ({len(done)} traces)")
         return
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn, TRACES.open("a") as out:
+    with connect() as conn, TRACES.open("a") as out:
         for t in traces:
             retrieved = (t.metadata or {}).get("retrieved", [])
             content = chunk_rows(conn, [r["id"] for r in retrieved])

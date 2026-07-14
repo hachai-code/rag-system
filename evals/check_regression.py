@@ -22,14 +22,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
-
 from evals.answer.judge import eval_items
 from evals.answer.judge_db import judge_client
 from evals.run import evaluate, load_config
-from rag import ANSWER_FORMAT, DB_URL
+from rag import ANSWER_FORMAT
+from rag.db import connect
 
 BASELINE = Path(__file__).parent / "baseline_metrics.json"
 THRESHOLD = 0.15
@@ -51,8 +48,7 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
     client = judge_client(cfg["judge"]["provider"], cfg["judge"]["model"])
     per_dim = defaultdict(list)
     succeeded = 0
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         for r in evaluate(conn, client,
                           items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
                           cfg["retrieval"].get("method", "rerank"),

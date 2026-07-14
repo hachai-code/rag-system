@@ -14,11 +14,8 @@ Run: uv run python -m evals.search.compare_retrieval
 import json
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
-
-from rag import DB_URL, keyword_search, search
+from rag import keyword_search, search
+from rag.db import connect
 
 from evals.search.metrics import gold_ids
 
@@ -43,8 +40,7 @@ def main() -> None:
     rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
     graded = [r for r in rows if r.get("relevance_keywords")]
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         scored = []  # (question_row, gold_ids, vector_hits)
         for r in graded:
             gold = gold_ids(conn, r["relevance_keywords"])

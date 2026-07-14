@@ -11,11 +11,8 @@ Run: uv run python -m evals.answer.gen_eval
 import json
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
-
-from rag import DB_URL, answer, search
+from rag import answer, search
+from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 
@@ -23,8 +20,7 @@ EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 def main() -> None:
     rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         for row in rows:
             hits = search(conn, row["question"])
             row["top_sources"] = [

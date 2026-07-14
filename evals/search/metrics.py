@@ -16,10 +16,9 @@ import sys
 from pathlib import Path
 
 import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 
-from rag import DB_URL, hybrid_search, rerank_search, search
+from rag import hybrid_search, rerank_search, search
+from rag.db import connect
 
 K = 5
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
@@ -68,8 +67,7 @@ def main() -> None:
 
     print(f"{'id':>3}  {'category':<11} {'gold':>4} {'hit':>3} {'rank':>4}")
     scored = []  # (gold_count, recall, rr)
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         for r in graded:
             expected = gold_ids(conn, r["relevance_keywords"])
             retrieved = [h["id"] for h in retriever(conn, r["question"])]

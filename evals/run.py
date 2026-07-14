@@ -22,14 +22,12 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
 from evals.answer.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
-from rag import ANSWER_FORMAT, DB_URL, SYSTEM_PROMPT, answer, retrieve, search
+from rag import ANSWER_FORMAT, SYSTEM_PROMPT, answer, retrieve, search
+from rag.db import connect
 
 
 def sha(text: str) -> str:
@@ -178,8 +176,7 @@ def main() -> None:
     gen_format = cfg["generation"].get("format", ANSWER_FORMAT)
     client = judge_client(cfg["judge"]["provider"], cfg["judge"]["model"])
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn:
-        register_vector(conn)
+    with connect() as conn:
         prev_id = conn.execute("SELECT max(id) AS id FROM eval_runs").fetchone()["id"]
         run_id = conn.execute(
             "INSERT INTO eval_runs (git_sha, config) VALUES (%s, %s) RETURNING id",

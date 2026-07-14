@@ -24,11 +24,10 @@ from pathlib import Path
 
 import instructor
 import psycopg
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from rag import DB_URL, RELEVANCE_THRESHOLD, answer, search
+from rag import RELEVANCE_THRESHOLD, answer, search
+from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
@@ -154,8 +153,7 @@ def main() -> None:
     client = instructor.from_provider(f"anthropic/{JUDGE_MODEL}", mode=instructor.Mode.TOOLS)
     done = existing_ids()
 
-    with psycopg.connect(DB_URL, row_factory=dict_row) as conn, OUT_FILE.open("a") as out:
-        register_vector(conn)
+    with connect() as conn, OUT_FILE.open("a") as out:
         judged = 0
         for item in items:
             if judged >= n:

@@ -233,7 +233,7 @@ def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
 
     fake_client = SimpleNamespace(chat=SimpleNamespace(
         completions=SimpleNamespace(create=fake_create)))
-    monkeypatch.setattr(answer_mod, "OpenAI", lambda **_: fake_client)
+    monkeypatch.setattr(answer_mod, "openrouter_client", lambda: fake_client)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
 
     events = list(answer_mod.answer_stream(
