@@ -12,6 +12,8 @@ evals/
   DESIGN.md              the plan and rationale
   README.md              this map
   eval_set.jsonl         the shared test bank — questions, ideal answers, gold chunk ids
+  traces.jsonl           eval traces for viewers/trace_viewer.py
+  langfuse_traces.jsonl  production traces for viewers/langfuse_viewer.py
   schema.py              shared Pydantic row schema
   run.py                 one-command run: retrieve → answer → judge, logged to Postgres
   check_regression.py    CI gate: fail a PR if a category's pass rate drops too far
@@ -43,6 +45,13 @@ evals/
     trace_viewer.py        open-coding over eval traces (free-text notes)
     langfuse_viewer.py     open-coding over REAL production traces from Langfuse
     labelling/             standalone FastHTML labelling app
+
+  web_search/            evaluate the WEB SEARCH agent (separate from the RAG;
+    eval_set.jsonl         its own test bank — questions, must_contain, facts
+    run_baseline.py        run the agent over the set, resumable, → data/results.jsonl
+    judge.py               two-stage judge: grade vs facts, then failure taxonomy
+    tuning-log.md          what was tried and what moved the numbers
+    data/ analysis/        results + judgments per run; metrics per run
 
   notes/                 failure-analysis.md, chunking-experiments.md
 ```

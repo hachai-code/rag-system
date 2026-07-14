@@ -303,7 +303,7 @@ class AgentRunStarted(BaseModel):
 def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunStarted:
     for run_id, run in list(agent_runs.items()):  # prune finished runs older than 1h
         if run["done"] and time.monotonic() - run["ended_at"] > 3600:
-            del agent_runs[run_id]
+            agent_runs.pop(run_id, None)  # pop, not del: concurrent requests both prune
 
     run_id = uuid.uuid4().hex
     run = {"events": [], "done": False, "ended_at": None}
@@ -335,7 +335,7 @@ def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> Strea
         raise HTTPException(404, "unknown run (finished long ago, or the server restarted)")
 
     def events():
-        i = after
+        i = max(0, after)  # a negative cursor would index from the list's end
         while True:
             while i < len(run["events"]):
                 yield f"data: {json.dumps(run['events'][i])}\n\n"

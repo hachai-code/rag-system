@@ -7,7 +7,7 @@ the browser (localStorage) so you can grade in one sitting without losing work.
 
 Reuses the stored `draft_answer` (the RAG answer from gen_eval.py) and re-runs
 search() to show the chunks it was based on — retrieval is deterministic, so the
-chunks match the answer. Open evals/grade.html in a browser afterwards.
+chunks match the answer. Open evals/viewers/grade.html in a browser afterwards.
 
 Run: uv run python -m evals.viewers.grade
 """

@@ -464,21 +464,27 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     _web_calls[thread_id] = 0
     pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
     decisions = [{"type": decision} for _ in pending]
-    with get_client().start_as_current_observation(
-        as_type="span", name="rag-agent-resume", input=decision
-    ) as span:
-        config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
-        result = AGENT.invoke(Command(resume={"decisions": decisions}), config)
-        if result.get("__interrupt__"):
-            span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {
-                "status": "awaiting_approval",
-                "thread_id": thread_id,
-                "pending": _pending_tool_calls(result["__interrupt__"]),
-            }
-        answer = _final_answer(result)
-        span.update(output=answer, metadata={"thread_id": thread_id})
-    return {"status": "done", "answer": answer, "thread_id": thread_id}
+    try:
+        with get_client().start_as_current_observation(
+            as_type="span", name="rag-agent-resume", input=decision
+        ) as span:
+            config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
+            result = AGENT.invoke(Command(resume={"decisions": decisions}), config)
+            if result.get("__interrupt__"):
+                span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
+                return {
+                    "status": "awaiting_approval",
+                    "thread_id": thread_id,
+                    "pending": _pending_tool_calls(result["__interrupt__"]),
+                }
+            answer = _final_answer(result)
+            span.update(output=answer, metadata={"thread_id": thread_id})
+        return {"status": "done", "answer": answer, "thread_id": thread_id}
+    finally:
+        # Same per-run cleanup as run_deepagent — retrieve_corpus refills _registries
+        # during a resumed run, and _web_calls was reseeded above.
+        _registries.pop(thread_id, None)
+        _web_calls.pop(thread_id, None)
 
 
 def _step_label(name: str, args: dict) -> str:
