@@ -5,6 +5,9 @@ Run: uv run fastapi dev rag/app.py
 
 import json
 import os
+import threading
+import time
+import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -256,14 +259,62 @@ def resume_deepagent_endpoint(
     return DeepAgentResponse(answer=result["answer"], thread_id=result["thread_id"])
 
 
-# SSE: `status` events stream in as the deep agent retrieves, plans, and delegates
-# web research (subagent steps included), terminated by one `answer` (or `error`).
-@app.post("/ask/agent/stream")
+# Deep-agent runs are decoupled from the HTTP connection: POST /ask/agent/run starts
+# the agent in a background thread that buffers its events here, and GET /ask/agent/run/
+# {run_id}?after=N replays buffered events then follows live. A mobile client whose
+# connection dies while backgrounded reconnects with its event count and misses nothing;
+# the run itself never stops.
+# ponytail: in-memory, single-process; a restart loses live runs (finished answers
+# still land in QA memory). Move to Redis/Postgres if the API ever runs >1 worker.
+agent_runs: dict[str, dict] = {}
+
+
+class AgentRunStarted(BaseModel):
+    run_id: str
+
+
+@app.post("/ask/agent/run")
 @limiter.limit(RATE_LIMIT)
-def ask_deepagent_stream(request: Request, body: DeepAgentRequest) -> StreamingResponse:
+def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunStarted:
+    for run_id, run in list(agent_runs.items()):  # prune finished runs older than 1h
+        if run["done"] and time.monotonic() - run["ended_at"] > 3600:
+            del agent_runs[run_id]
+
+    run_id = uuid.uuid4().hex
+    run = {"events": [], "done": False, "ended_at": None}
+    agent_runs[run_id] = run
+
+    def work():
+        try:
+            for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
+                run["events"].append(event)
+        except Exception as e:
+            run["events"].append({"type": "error", "message": str(e)})
+        finally:
+            run["ended_at"] = time.monotonic()
+            run["done"] = True
+
+    threading.Thread(target=work, daemon=True).start()
+    return AgentRunStarted(run_id=run_id)
+
+
+# SSE: replays the run's events from index `after`, then follows until the run ends.
+@app.get("/ask/agent/run/{run_id}")
+@limiter.limit(RATE_LIMIT)
+def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> StreamingResponse:
+    run = agent_runs.get(run_id)
+    if run is None:
+        raise HTTPException(404, "unknown run (finished long ago, or the server restarted)")
+
     def events():
-        for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
-            yield f"data: {json.dumps(event)}\n\n"
+        i = after
+        while True:
+            while i < len(run["events"]):
+                yield f"data: {json.dumps(run['events'][i])}\n\n"
+                i += 1
+            if run["done"]:
+                return
+            time.sleep(0.3)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

@@ -15,6 +15,24 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// Resolves once the tab is visible (mobile browsers kill connections of
+// backgrounded tabs), plus a beat for the network to come back.
+function visibleAgain(): Promise<void> {
+  return new Promise((resolve) => {
+    const settle = () => setTimeout(resolve, 1000);
+    if (document.visibilityState === "visible") {
+      settle();
+      return;
+    }
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", onVisible);
+      settle();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  });
+}
+
 export default function Home() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -92,14 +110,83 @@ export default function Home() {
     setLoading(true);
 
     // The deep agent answers from the corpus then enriches each point with web
-    // research. It streams its process — `status` steps as it retrieves, plans,
-    // and delegates to the research subagent — then one terminal `answer`.
+    // research. The run executes server-side, decoupled from this connection: we
+    // start it, then read its buffered event stream with a cursor. If the phone
+    // backgrounds the tab and the connection dies, we reconnect from where we left
+    // off once the tab is visible again — the run kept going the whole time.
     if (deepAgent) {
-      const res = await fetch(`${API_URL}/ask/agent/stream`, {
+      const start = await fetch(`${API_URL}/ask/agent/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, thread_id: threadId, research_budget: researchBudget }),
       });
+      const { run_id } = await start.json();
+
+      let received = 0;
+      for (;;) {
+        try {
+          const res = await fetch(`${API_URL}/ask/agent/run/${run_id}?after=${received}`);
+          if (res.status === 404) {
+            setAnswer("Error: this run is gone (server restarted). Ask again.");
+            break;
+          }
+          const reader = res.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let done = false;
+          while (!done) {
+            const chunk = await reader.read();
+            done = chunk.done;
+            if (!chunk.value) continue;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const frames = buffer.split("\n\n");
+            buffer = frames.pop() ?? "";
+            for (const frame of frames) {
+              const data = frame.replace(/^data: /, "");
+              if (!data) continue;
+              const event: DeepAgentEvent = JSON.parse(data);
+              received += 1;
+              if (event.type === "status") {
+                setSteps((prev) => [
+                  ...prev,
+                  { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
+                ]);
+              } else if (event.type === "result") {
+                // Attach the tool result to the step it belongs to (matched by call_id).
+                setSteps((prev) =>
+                  prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
+                );
+              } else if (event.type === "sources") {
+                setCorpusSources(event.sources);
+              } else if (event.type === "answer") {
+                setAnswer(event.text);
+              } else if (event.type === "error") {
+                setAnswer(`Error: ${event.message}`);
+              }
+            }
+          }
+          break; // the server only closes the stream when the run is done
+        } catch {
+          await visibleAgain(); // connection died (likely backgrounded) — reconnect
+        }
+      }
+      setLoading(false);
+      loadMemories(); // the finished run may have stored a new memory
+      return;
+    }
+
+    // The /ask path streams the generation live, so a dropped connection loses the
+    // rest of the answer — surface that instead of hanging on "…" forever.
+    // ponytail: no resume here; the deep-agent path has the durable-run treatment.
+    try {
+      const res = await fetch(`${API_URL}/ask/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
+      });
+
+      // Read the SSE stream: frames are separated by a blank line, each one a
+      // "data: {json}" line. We buffer bytes and parse whole frames as they arrive.
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -110,66 +197,23 @@ export default function Home() {
         if (!chunk.value) continue;
         buffer += decoder.decode(chunk.value, { stream: true });
         const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
+        buffer = frames.pop() ?? ""; // keep the trailing partial frame for next read
         for (const frame of frames) {
           const data = frame.replace(/^data: /, "");
           if (!data) continue;
-          const event: DeepAgentEvent = JSON.parse(data);
-          if (event.type === "status") {
-            setSteps((prev) => [
-              ...prev,
-              { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
-            ]);
-          } else if (event.type === "result") {
-            // Attach the tool result to the step it belongs to (matched by call_id).
-            setSteps((prev) =>
-              prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
-            );
-          } else if (event.type === "sources") {
-            setCorpusSources(event.sources);
-          } else if (event.type === "answer") {
-            setAnswer(event.text);
-          } else if (event.type === "error") {
-            setAnswer(`Error: ${event.message}`);
+          const event: StreamEvent = JSON.parse(data);
+          if (event.type === "text") {
+            setAnswer((prev) => prev + event.text);
+          } else {
+            setCitations((prev) => [...prev, event]);
           }
         }
       }
+    } catch {
+      setAnswer((prev) => prev + "\n\n[Connection lost — ask again to retry.]");
+    } finally {
       setLoading(false);
-      loadMemories(); // the finished run may have stored a new memory
-      return;
     }
-
-    const res = await fetch(`${API_URL}/ask/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
-    });
-
-    // Read the SSE stream: frames are separated by a blank line, each one a
-    // "data: {json}" line. We buffer bytes and parse whole frames as they arrive.
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let done = false;
-    while (!done) {
-      const chunk = await reader.read();
-      done = chunk.done;
-      if (!chunk.value) continue;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? ""; // keep the trailing partial frame for next read
-      for (const frame of frames) {
-        const data = frame.replace(/^data: /, "");
-        if (!data) continue;
-        const event: StreamEvent = JSON.parse(data);
-        if (event.type === "text") {
-          setAnswer((prev) => prev + event.text);
-        } else {
-          setCitations((prev) => [...prev, event]);
-        }
-      }
-    }
-    setLoading(false);
   }
 
   // Open a citation: fetch the chunk's place in its document and show it. Clicking

@@ -43,7 +43,7 @@ export interface CorpusSource {
   source: string;
 }
 
-// SSE from POST /ask/agent/stream: a `status` event per tool call and a `result`
+// SSE from GET /ask/agent/run/{run_id}: a `status` event per tool call and a `result`
 // event per tool result (correlated by call_id) stream in as the agent works
 // (scope "research" = inside the web-research subagent), then a `sources` event
 // listing the cited corpus passages and one terminal `answer` — or `error`.
