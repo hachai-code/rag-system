@@ -8,6 +8,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -103,6 +104,28 @@ export default function EvalsPage() {
     test: final?.test?.pass_rate[d],
   }));
 
+  // Runs where the config hash changed (or the first run): a vertical marker at
+  // each on the trend charts, so a dip you see next to a marker is a config
+  // change, not a regression. git_sha in the label separates a corpus/code
+  // change (same config hash, different sha) from a knob change.
+  const boundaries = runs
+    .map((r, i) => ({ r, prev: runs[i - 1] }))
+    .filter(({ r, prev }) => !prev || r.config_hash !== prev.config_hash)
+    .map(({ r }) => ({
+      label: `#${r.run_id}`,
+      text: `${r.config_name ?? "?"} ${r.config_hash?.slice(0, 6) ?? ""} · ${r.git_sha.slice(0, 7)}`,
+    }));
+
+  const configMarkers = boundaries.map((b) => (
+    <ReferenceLine
+      key={b.label}
+      x={b.label}
+      stroke="var(--muted)"
+      strokeDasharray="3 3"
+      label={{ value: b.text, position: "top", fontSize: 10, fill: "var(--muted)" }}
+    />
+  ));
+
   return (
     <main className="viz-root mx-auto max-w-4xl flex-1 px-4 py-10">
       <style>{VIZ_VARS}</style>
@@ -114,12 +137,13 @@ export default function EvalsPage() {
 
       <Section title="Pass rate per dimension" sub="Per-run judge pass rate for each rubric dimension (A–F), over time.">
         <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={trend} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <LineChart data={trend} margin={{ top: 22, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="var(--grid)" vertical={false} />
             <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--grid)" />
             <YAxis domain={[0, 1]} tickFormatter={pct} tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--grid)" width={44} />
             <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => pct(v as number)} labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload.date} · ${p?.[0]?.payload.config}`} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
+            {configMarkers}
             {dims.map((d) => (
               <Line key={d} dataKey={d} stroke={DIM_COLOR(d)} strokeWidth={2} dot={{ r: 3, fill: DIM_COLOR(d) }} connectNulls />
             ))}
@@ -129,11 +153,12 @@ export default function EvalsPage() {
 
       <Section title="Judge cost per run" sub="Total judge-call cost (USD) for each run.">
         <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={trend} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <BarChart data={trend} margin={{ top: 22, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="var(--grid)" vertical={false} />
             <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--grid)" />
             <YAxis tickFormatter={usd} tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--grid)" width={64} />
             <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => usd(v as number)} cursor={{ fill: "var(--grid)", opacity: 0.4 }} />
+            {configMarkers}
             <Bar dataKey="cost" fill="var(--seq)" radius={[4, 4, 0, 0]} maxBarSize={40} />
           </BarChart>
         </ResponsiveContainer>
