@@ -595,8 +595,8 @@ function CorpusSources({ sources }: { sources: CorpusSource[] }) {
 // clickable chips linking to each source (corpus points cite [n] inline).
 function WebSources({ answer }: { answer: string }) {
   const urls = [
-    ...new Set((answer.match(/https?:\/\/[^\s)\]<>"']+/g) ?? []).map((u) => u.replace(/[.,;]+$/, ""))),
-  ];
+    ...new Set((answer.match(/https?:\/\/[^\s)\]<>"'`|]+/g) ?? []).map((u) => u.replace(/[.,;]+$/, ""))),
+  ].filter((u) => URL.canParse(u));
   if (urls.length === 0) return null;
   return (
     <section className="mb-8">
