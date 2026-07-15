@@ -14,8 +14,10 @@ from typing import Annotated, Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langfuse import get_client
+from langfuse import Langfuse, get_client
+from langfuse.span_filter import is_default_export_span
 from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -73,7 +75,22 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY"):
         AnthropicInstrumentor().instrument()
     else:
         import langfuse.openai  # noqa: F401  (import patches the openai module)
-langfuse = get_client()
+    FastAPIInstrumentor.instrument_app(
+        app, excluded_urls="docs,openapi.json,redoc", exclude_spans=["receive", "send"]
+    )
+    # Langfuse only exports LLM-ish spans by default; allowlist the FastAPI HTTP
+    # spans too. Langfuse(...) registers the singleton get_client() returns elsewhere.
+    langfuse = Langfuse(
+        should_export_span=lambda s: (
+            is_default_export_span(s)
+            or (
+                s.instrumentation_scope is not None
+                and s.instrumentation_scope.name == "opentelemetry.instrumentation.fastapi"
+            )
+        )
+    )
+else:
+    langfuse = get_client()
 
 
 class AskRequest(BaseModel):

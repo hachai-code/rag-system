@@ -7,10 +7,11 @@ We pull those traces and rehydrate the chunk *content* from Postgres by id — t
 stores only id/title/distance to keep spans small — producing the same
 {id, question, chunks, answer, note} shape trace_viewer's UI already renders.
 
-Verified against the installed Langfuse SDK (4.9.0): the read API is
-`client.api.trace.list(...)` → `.data` / `.meta.total_items`, each trace exposing
-`.input`, `.output`, `.metadata`. No LLM calls here — pulling is just a Langfuse read
-plus a chunk-content lookup, so it's cheap and safe to re-run.
+Reads the rag-ask/rag-ask-stream observations (via evals.flywheel.sample_traces.spans) rather
+than trace-level fields: since FastAPI auto-instrumentation the trace root is the
+HTTP span, so question/answer/metadata live on the rag-ask span. No LLM calls here —
+pulling is just a Langfuse read plus a chunk-content lookup, so it's cheap and safe
+to re-run.
 
     uv run python -m evals.viewers.langfuse_viewer pull   # cache real traces -> langfuse_traces.jsonl
     uv run python -m evals.viewers.langfuse_viewer        # serve the viewer (default), port 5004
@@ -26,6 +27,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from langfuse import get_client
 
+from evals.flywheel.sample_traces import SPAN_NAMES, spans
 from evals.viewers.trace_viewer import HTML, load  # same open-coding UI, different data source
 from rag.db import connect
 
@@ -48,21 +50,11 @@ def chunk_rows(conn, ids: list[int]) -> dict:
     return {r["id"]: r for r in rows}
 
 
-def all_traces(lf) -> list:
-    """Every trace in the project, newest first, paging through the list API."""
-    out, page = [], 1
-    while True:
-        res = lf.api.trace.list(page=page, limit=50, order_by="timestamp.desc")
-        out.extend(res.data)
-        if not res.data or len(out) >= (res.meta.total_items or len(out)):
-            return out
-        page += 1
-
-
 def pull() -> None:
     """Cache real Langfuse traces, rehydrating chunk content. Resumable by trace id."""
     done = {t["id"] for t in load(TRACES)}
-    traces = [t for t in all_traces(get_client()) if t.id not in done]
+    lf = get_client()
+    traces = [o for name in SPAN_NAMES for o in spans(lf, name) if o.trace_id not in done]
     if not traces:
         print(f"{TRACES}: already complete ({len(done)} traces)")
         return
@@ -84,10 +76,10 @@ def pull() -> None:
             out.write(
                 json.dumps(
                     {
-                        "id": t.id,
-                        "question": t.input or "",
+                        "id": t.trace_id,
+                        "question": str(t.input) if t.input else "",
                         "chunks": chunks,
-                        "answer": t.output or "",
+                        "answer": str(t.output) if t.output else "",
                         "note": "",
                     },
                     ensure_ascii=False,
@@ -95,7 +87,7 @@ def pull() -> None:
                 + "\n"
             )
             out.flush()
-            print(f"  pulled {t.id[:8]}…  {len(chunks)} chunks  {str(t.input)[:50]}")
+            print(f"  pulled {t.trace_id[:8]}…  {len(chunks)} chunks  {str(t.input)[:50]}")
     print(f"{TRACES}: {len(load(TRACES))} traces")
 
 

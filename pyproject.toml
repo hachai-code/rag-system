@@ -21,7 +21,7 @@ dependencies = [
     "langfuse>=4.9.0",
     "opentelemetry-instrumentation-anthropic>=0.61.0",
     "instructor>=1.15.3",
-    "openai>=2.43.0",
+    "openai>=2.45.0",
     "pymupdf>=1.27.2.3",
     "deepeval>=4.0.7",
     "trafilatura>=2.1.0",
@@ -30,10 +30,15 @@ dependencies = [
     "deepagents",
     "langchain-deepseek",
     "nemoguardrails>=0.23.0",
+    "opentelemetry-instrumentation-fastapi>=0.64b0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.15"]
+dev = [
+    "inspect-ai>=0.3.246",
+    "pytest>=8",
+    "ruff>=0.15",
+]
 
 [tool.ruff]
 line-length = 100

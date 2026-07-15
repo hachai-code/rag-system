@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import psycopg
+from langfuse import get_client
 
 from ..clients import voyage_client
 from ..config import CONFIG
@@ -310,6 +311,34 @@ def retrieve(
     """The retrieval entry point: run `method`, with optional query enhancement and
     parent-document expansion. app.py and the eval runner call this so a config, not a
     code edit, picks the retrieval strategy."""
+    # One span for the whole retrieval stage, so traces show retrieval vs generation
+    # time. get_client() is a no-op without LANGFUSE_* keys (scripts, evals).
+    with get_client().start_as_current_observation(
+        as_type="span",
+        name="retrieval",
+        input={
+            "question": question,
+            "method": method,
+            "k": k,
+            "query_enhancement": query_enhancement,
+            "parent_document": parent_document,
+            "hype": hype,
+        },
+    ) as span:
+        hits = _retrieve(conn, question, k, method, query_enhancement, parent_document, hype)
+        span.update(output={"n_hits": len(hits), "chunk_ids": [h["id"] for h in hits]})
+        return hits
+
+
+def _retrieve(
+    conn: psycopg.Connection,
+    question: str,
+    k: int,
+    method: str,
+    query_enhancement: str | None,
+    parent_document: bool,
+    hype: bool,
+) -> list[Hit]:
     if hype:
         # HyPE supplies the first stage — the query matched against hypothetical-question
         # vectors, mapped back to parent chunks. With rerank, the cross-encoder still
