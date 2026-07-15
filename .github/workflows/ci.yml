@@ -20,4 +20,5 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
+      - run: uv run ruff check . && uv run ruff format --check .
       - run: uv run pytest
