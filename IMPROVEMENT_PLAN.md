@@ -1,5 +1,9 @@
 # rag-system Improvement Plan
 
+> **Status (2026-07-15):** Phases 0–7 complete. Phase 7 needed no code change —
+> env access already followed the convention; the drip rule is codified in
+> AGENTS.md. Remaining: Phase 8 (reusable clean-code skill).
+
 ## Context
 
 Compared `~/Documents/Code/rag-system` against `~/PycharmProjects/pydantic-ai` and `~/PycharmProjects/software-agent-sdk` (OpenHands). Both reference repos are large production frameworks; the goal is to borrow only the cleanliness conventions that pay off for a ~3,000-line single-developer project, and to fix the concrete issues found. rag-system's evals-as-quality-gate design (documented in `evals/DESIGN.md`) is deliberate and stays.
