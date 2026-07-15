@@ -66,7 +66,7 @@ app.add_middleware(
 app.include_router(evals_router)
 
 # Langfuse tracing: with the LANGFUSE_* keys set, each /ask is one trace; the
-# generation call is auto-captured by the active provider's instrumentor (see README).
+# generation call is auto-captured by the active provider's instrumentor.
 # Without keys, get_client() is a disabled no-op, so the app runs unchanged.
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     if GEN_PROVIDER == "anthropic":
@@ -77,22 +77,35 @@ langfuse = get_client()
 
 
 class AskRequest(BaseModel):
-    question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
-    # "prose" or "claims"; only affects the openai-compat path (see answer.py).
-    format: Literal["prose", "claims"] = ANSWER_FORMAT
-    # Generation model picker; resolved to an OpenRouter id via GEN_MODELS.
-    model: Literal["pro", "flash"] = "pro"
-    # Retriever funnel; default from config.toml ([retrieval] method), production is rerank.
-    method: Literal["vector", "hybrid", "rerank"] = METHOD
-    # Runtime query rewriting: HyDE hypothetical or multi-query paraphrase fusion (off by default).
-    query_enhancement: Literal["hyde", "multi_query"] | None = QUERY_ENHANCEMENT
-    # Widen each hit to its neighbouring chunks before answering (parent-document retrieval).
-    parent_document: bool = PARENT_DOCUMENT
-    # Match the query against index-time hypothetical questions instead of raw chunks (HyPE).
-    hype: bool = HYPE
-    # Chunks handed to the generator (the citable pool). Defaults to config top_k;
-    # can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.
-    top_k: Annotated[int, Field(ge=1, le=RERANK_DEPTH)] = TOP_K
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    format: Literal["prose", "claims"] = Field(
+        ANSWER_FORMAT, description="Answer format; only affects the openai-compat path."
+    )
+    model: Literal["pro", "flash"] = Field(
+        "pro", description="Generation model picker, resolved to an OpenRouter id via GEN_MODELS."
+    )
+    method: Literal["vector", "hybrid", "rerank"] = Field(
+        METHOD, description="Retriever funnel; production default is rerank."
+    )
+    query_enhancement: Literal["hyde", "multi_query"] | None = Field(
+        QUERY_ENHANCEMENT,
+        description="Query rewriting: HyDE hypothetical or multi-query paraphrase fusion.",
+    )
+    parent_document: bool = Field(
+        PARENT_DOCUMENT,
+        description="Widen each hit to its neighbouring chunks before answering.",
+    )
+    hype: bool = Field(
+        HYPE,
+        description="Match against index-time hypothetical questions instead of raw chunks.",
+    )
+    top_k: int = Field(
+        TOP_K,
+        ge=1,
+        le=RERANK_DEPTH,
+        description="Chunks handed to the generator (the citable pool); "
+        "can't exceed RERANK_DEPTH, since rerank only has that many candidates to keep.",
+    )
 
 
 class Source(BaseModel):

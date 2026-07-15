@@ -18,7 +18,7 @@ VOYAGE_MODEL = CONFIG.voyage_model
 TOP_K = CONFIG.top_k
 METHOD = CONFIG.method  # production default retriever (vector | hybrid | rerank)
 
-# Runtime query-enhancement toggles (config.toml [retrieval]). "" means off.
+# Runtime query-enhancement toggles; "" in config means off.
 QUERY_ENHANCEMENT = CONFIG.query_enhancement or None
 PARENT_DOCUMENT = CONFIG.parent_document
 HYPE = CONFIG.hype  # match against index-time hypothetical questions (see hype_search)
@@ -26,14 +26,14 @@ HYPE = CONFIG.hype  # match against index-time hypothetical questions (see hype_
 FLASH_MODEL = CONFIG.gen_models["flash"]
 N_VARIANTS = 4  # multi-query paraphrases fused with the original question
 
-# Distance beyond which the corpus is treated as not covering the question (README).
+# Distance beyond which the corpus is treated as not covering the question.
 RELEVANCE_THRESHOLD = CONFIG.relevance_threshold
 
 # Reciprocal Rank Fusion: candidates pulled per retriever, and the paper's k=60.
 FUSE_DEPTH = CONFIG.fuse_depth
 RRF_K = CONFIG.rrf_k
 
-# Keyword is the noisier retriever, so it's down-weighted (README "Retrieval design").
+# Keyword is the noisier retriever, so it's down-weighted.
 VECTOR_WEIGHT = CONFIG.vector_weight
 KEYWORD_WEIGHT = CONFIG.keyword_weight
 
@@ -129,8 +129,7 @@ def rrf(ranked_lists: list[tuple[float, list[Hit]]], k: int = RRF_K) -> list[Hit
 def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]:
     """Fuse vector and keyword rankings with weighted Reciprocal Rank Fusion.
 
-    Keyword is down-weighted (README "Retrieval design"); the two retrievers pull
-    FUSE_DEPTH candidates each before rrf() blends them."""
+    The two retrievers pull FUSE_DEPTH candidates each before rrf() blends them."""
     ranked_lists = [
         (VECTOR_WEIGHT, search(conn, question, FUSE_DEPTH)),
         (KEYWORD_WEIGHT, keyword_search(conn, question, FUSE_DEPTH)),

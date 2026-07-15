@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from ..config import CONFIG
 from .ingest import CORPUS_ROOT, Document, count_tokens, load_corpus
 
-CHUNK_SIZE = CONFIG.chunk_size  # 256 won the size sweep (see README)
+CHUNK_SIZE = CONFIG.chunk_size  # 256 won the size sweep
 CHUNK_OVERLAP = CONFIG.chunk_overlap  # tokens carried from the end of one chunk into the next
 
 

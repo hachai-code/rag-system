@@ -25,7 +25,7 @@ def build_index() -> None:
     client = voyageai.Client()
     tracker = UsageTracker()
     # Contextual prefix (section + title) on each chunk's embedded text — improves
-    # retrieval (README "Pipeline order"). The stored content stays raw.
+    # retrieval. The stored content stays raw.
     texts = [f"{c.section} — {c.title[:60]}\n\n{c.content}" for c in chunks]
     embeddings = embed_batches(client, texts, tracker)
 

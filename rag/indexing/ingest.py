@@ -168,7 +168,7 @@ def parse_transcript(text: str) -> list[Segment]:
 
 # transformation_medicine_ebook.pdf is a two-voice dialogue: Pi's lines are italic
 # (Delicious-Italic), Doc Romy's roman (Delicious-Roman). Plain-text extraction loses
-# the font, so we read per-span fonts to recover who's speaking. See README.
+# the font, so we read per-span fonts to recover who's speaking.
 DIALOGUE_PDF = "transformation_medicine_ebook.pdf"
 _PAGE_NUMBER = re.compile(
     r"\d[\d\s]*\|[\d\s]*"

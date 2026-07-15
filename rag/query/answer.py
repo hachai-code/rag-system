@@ -29,8 +29,8 @@ class Citation(TypedDict):
     source: str
 
 
-# Provider seam: which adapter answer() dispatches to and which model it runs, both
-# from config.toml. Prod runs the openai-compat/DeepSeek path (see README).
+# Provider seam: which adapter answer() dispatches to and which model it runs.
+# Prod runs the openai-compat/DeepSeek path.
 GEN_PROVIDER = CONFIG.gen_provider
 GEN_MODEL = CONFIG.gen_model
 # Picker options for the API `model` field: short name -> OpenRouter model id.
@@ -209,7 +209,7 @@ def answer(
 ) -> tuple[str, list[Citation]]:
     """Answer over the retrieved chunks and return (answer_text, citations).
 
-    Dispatches by `provider` (see README); `fmt` picks prose vs structured claims on
+    Dispatches by `provider`; `fmt` picks prose vs structured claims on
     the openai-compat path. The eval runner overrides the defaults to test a config
     (evals/run.py)."""
     if provider == "anthropic":
