@@ -96,14 +96,16 @@ def main() -> None:
         if not question.endswith("?") or question.startswith(("I ", "I'")):
             skipped += 1
             continue
-        rows.append({
-            "id": len(rows) + 1,
-            "category": "synthetic",
-            "question": question,
-            "expected_chunk_ids": [chunk["id"]],
-            "ideal_answer": chunk["content"],
-            "source": {"chunk_id": chunk["id"], "title": chunk["title"]},
-        })
+        rows.append(
+            {
+                "id": len(rows) + 1,
+                "category": "synthetic",
+                "question": question,
+                "expected_chunk_ids": [chunk["id"]],
+                "ideal_answer": chunk["content"],
+                "source": {"chunk_id": chunk["id"], "title": chunk["title"]},
+            }
+        )
         print(f"  [{len(rows):>2}/{n}] {chunk['title'][:28]:<28} {question[:58]}")
 
     with OUT_FILE.open("w") as f:

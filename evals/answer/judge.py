@@ -145,8 +145,12 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
         response_model=Verdict,
         extra_body=REASONING_OFF,
         messages=[
-            {"role": "system", "content": SYSTEM.format(
-                name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def)},
+            {
+                "role": "system",
+                "content": SYSTEM.format(
+                    name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def
+                ),
+            },
             {"role": "user", "content": user},
         ],
     )
@@ -189,7 +193,9 @@ def main() -> None:
             try:
                 ans = rag_answer(conn, item["question"])
                 verdicts = {
-                    code: judge_dimension(client, code, item["question"], ans, item["ideal_answer"]).model_dump()
+                    code: judge_dimension(
+                        client, code, item["question"], ans, item["ideal_answer"]
+                    ).model_dump()
                     for code in item["axial_codes"]
                 }
             except Exception as e:

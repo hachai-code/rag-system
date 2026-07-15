@@ -38,9 +38,9 @@ def read_events(run_id: str, after: int = 0) -> list[dict]:
 def test_run_streams_and_replays_from_cursor(monkeypatch):
     monkeypatch.setattr(app_module, "stream_deepagent", fake_stream)
 
-    run_id = client.post(
-        "/ask/agent/run", json={"question": "q", "thread_id": "t"}
-    ).json()["run_id"]
+    run_id = client.post("/ask/agent/run", json={"question": "q", "thread_id": "t"}).json()[
+        "run_id"
+    ]
 
     assert read_events(run_id) == EVENTS  # first read follows the live run to the end
     assert read_events(run_id, after=1) == EVENTS[1:]  # reconnect replays from cursor

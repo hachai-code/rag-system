@@ -101,9 +101,9 @@ TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": 'Search query. Short and specific works best, '
-                                       'e.g. "node.js LTS latest version" not "what is '
-                                       'the latest LTS version of node.js released".',
+                        "description": "Search query. Short and specific works best, "
+                        'e.g. "node.js LTS latest version" not "what is '
+                        'the latest LTS version of node.js released".',
                     },
                 },
                 "required": ["query"],
@@ -191,9 +191,11 @@ def _execute_tool(name: str, arguments: str) -> str:
             return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
         if name == "fetch_page":
             return fetch_page(args["url"])
-        return (f"Tool error: unknown tool {name!r}. It does not exist here — "
-                "there is no todo list, plan, or subagent tool. Your only tools "
-                "are search_web and fetch_page; continue the research with those.")
+        return (
+            f"Tool error: unknown tool {name!r}. It does not exist here — "
+            "there is no todo list, plan, or subagent tool. Your only tools "
+            "are search_web and fetch_page; continue the research with those."
+        )
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
 
@@ -213,7 +215,8 @@ def _distill(client: OpenAI, question: str, page: str) -> tuple[str, float]:
     )
     try:
         resp = client.chat.completions.create(
-            model=DISTILL_MODEL, max_tokens=1024,
+            model=DISTILL_MODEL,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
         text = (resp.choices[0].message.content or "").strip()
@@ -256,8 +259,9 @@ def _limit_hit(iterations: int, cost_spent: float, elapsed: float) -> str | None
     return None
 
 
-def _rejected_citations(draft: str, sources: set[str],
-                        citation_retries: int) -> tuple[list[str], str | None]:
+def _rejected_citations(
+    draft: str, sources: set[str], citation_retries: int
+) -> tuple[list[str], str | None]:
     """([], None) when the draft's citations are acceptable (or retries are spent);
     otherwise the unseen URLs and the rewrite instruction to send back. Logs the
     rejection. Shared with the LangGraph rebuild."""
@@ -319,13 +323,15 @@ def _best_effort_answer(client: OpenAI, model: str, messages: list, limit: str) 
     stop_msg = {
         "role": "user",
         "content": "Stop researching. Do not call any tools. Answer the original "
-                   "question in plain prose, based only on what you have found so far.",
+        "question in plain prose, based only on what you have found so far.",
     }
     answer = ""
     for _ in range(3):
         try:
             resp = client.chat.completions.create(
-                model=model, max_tokens=MAX_TOKENS, messages=messages + [stop_msg],
+                model=model,
+                max_tokens=MAX_TOKENS,
+                messages=messages + [stop_msg],
             )
         except Exception:
             break
@@ -343,8 +349,10 @@ def _best_effort_answer(client: OpenAI, model: str, messages: list, limit: str) 
                 answer = content.split("<｜")[0].strip()
                 if answer:
                     break
-    return (f"{answer or 'Could not produce an answer.'}"
-            f"\n\n[Note: stopped early — {limit} limit reached]")
+    return (
+        f"{answer or 'Could not produce an answer.'}"
+        f"\n\n[Note: stopped early — {limit} limit reached]"
+    )
 
 
 def run_agent(question: str) -> str:
@@ -386,7 +394,8 @@ def run_agent(question: str) -> str:
                     messages.append({"role": "user", "content": CRITIQUE_PROMPT})
                     continue
                 _, rejection = _rejected_citations(
-                    msg.content, state.sources, state.citation_retries)
+                    msg.content, state.sources, state.citation_retries
+                )
                 if rejection:
                     state.citation_retries += 1
                     messages.append({"role": "user", "content": rejection})
@@ -395,28 +404,35 @@ def run_agent(question: str) -> str:
                 break
 
             for call in msg.tool_calls:
-                print(f"-> {call.function.name}({call.function.arguments})  "
-                      f"[iter {state.iterations}, ${state.cost_spent:.4f}, {state.elapsed:.1f}s]")
+                print(
+                    f"-> {call.function.name}({call.function.arguments})  "
+                    f"[iter {state.iterations}, ${state.cost_spent:.4f}, {state.elapsed:.1f}s]"
+                )
                 with get_client().start_as_current_observation(
                     as_type="tool", name=call.function.name, input=call.function.arguments
                 ) as tool_obs:
                     result = _execute_tool(call.function.name, call.function.arguments)
-                    if (call.function.name == "fetch_page"
-                            and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS):
+                    if (
+                        call.function.name == "fetch_page"
+                        and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS
+                    ):
                         result, distill_cost = _distill(client, state.question, result)
                         state.cost_spent += distill_cost
                     tool_obs.update(output=result)
-                state.record(Step(tool=call.function.name,
-                                  args=call.function.arguments, result=result))
+                state.record(
+                    Step(tool=call.function.name, args=call.function.arguments, result=result)
+                )
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
         span.update(
             output=answer,
-            metadata={"iterations": state.iterations,
-                      "cost_usd": round(state.cost_spent, 4),
-                      "limit_hit": limit,
-                      "citation_retries": state.citation_retries,
-                      "critiqued": critiqued},
+            metadata={
+                "iterations": state.iterations,
+                "cost_usd": round(state.cost_spent, 4),
+                "limit_hit": limit,
+                "citation_retries": state.citation_retries,
+                "critiqued": critiqued,
+            },
         )
     return answer
 
@@ -424,9 +440,13 @@ def run_agent(question: str) -> str:
 if __name__ == "__main__":
     import sys
 
-    question = sys.argv[1] if len(sys.argv) > 1 else (
-        "Which was released more recently, the latest stable Python or the latest "
-        "Node.js LTS, and what is one headline feature of each?"
+    question = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else (
+            "Which was released more recently, the latest stable Python or the latest "
+            "Node.js LTS, and what is one headline feature of each?"
+        )
     )
     print(f"Q: {question}\n")
     print(run_agent(question))

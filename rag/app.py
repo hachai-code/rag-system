@@ -21,9 +21,12 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from evals.api import router as evals_router
+
 from .db import connect
 from .guardrails import BLOCKED, check_input, check_output
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
+from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -36,9 +39,7 @@ from .query.retrieve import (
     search,
     source_passage,
 )
-from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.web_search_graph_agent import stream_agent
-from evals.api import router as evals_router
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -133,8 +134,11 @@ def _no_relevant_hits(hits: list[dict]) -> bool:
 def _retrieved_meta(hits: list[dict]) -> list[dict]:
     """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
-        {"id": h["id"], "title": h["title"],
-         "distance": round(h["distance"], 4) if h.get("distance") is not None else None}
+        {
+            "id": h["id"],
+            "title": h["title"],
+            "distance": round(h["distance"], 4) if h.get("distance") is not None else None,
+        }
         for h in hits
     ]
 
@@ -155,9 +159,15 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             if _no_relevant_hits(gate):
                 span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = retrieve(conn, body.question, k=body.top_k, method=body.method,
-                            query_enhancement=body.query_enhancement,
-                            parent_document=body.parent_document, hype=body.hype)
+            hits = retrieve(
+                conn,
+                body.question,
+                k=body.top_k,
+                method=body.method,
+                query_enhancement=body.query_enhancement,
+                parent_document=body.parent_document,
+                hype=body.hype,
+            )
         span.update(metadata={"retrieved": _retrieved_meta(hits)})
         text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
         if check_output(body.question, text):
@@ -195,12 +205,20 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                     yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
                     return
-                hits = retrieve(conn, body.question, k=body.top_k, method=body.method,
-                                query_enhancement=body.query_enhancement,
-                                parent_document=body.parent_document, hype=body.hype)
+                hits = retrieve(
+                    conn,
+                    body.question,
+                    k=body.top_k,
+                    method=body.method,
+                    query_enhancement=body.query_enhancement,
+                    parent_document=body.parent_document,
+                    hype=body.hype,
+                )
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
-            for event in answer_stream(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format):
+            for event in answer_stream(
+                body.question, hits, model=GEN_MODELS[body.model], fmt=body.format
+            ):
                 if event["type"] == "text":
                     answer_text.append(event["text"])
                 yield f"data: {json.dumps(event)}\n\n"

@@ -32,7 +32,7 @@ BASELINE = Path(__file__).parent / "baseline_metrics.json"
 THRESHOLD = 0.15
 MIN_SAMPLES = 5
 MIN_COMPLETE = 0.9  # if more than 10% of items fail to judge (API outage, credits), the
-                    # run can't gate quality — error the build instead of guessing.
+# run can't gate quality — error the build instead of guessing.
 
 
 def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict, int, int]:
@@ -49,14 +49,21 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
     per_dim = defaultdict(list)
     succeeded = 0
     with connect() as conn:
-        for r in evaluate(conn, client,
-                          items, cfg["retrieval"]["top_k"], cfg["retrieval"]["relevance_threshold"],
-                          cfg["retrieval"].get("method", "rerank"),
-                          cfg["retrieval"].get("query_enhancement"),
-                          cfg["retrieval"].get("parent_document", False),
-                          cfg["retrieval"].get("hype", False),
-                          cfg["generation"]["provider"], cfg["generation"]["model"], gen_prompt,
-                          cfg["generation"].get("format", ANSWER_FORMAT)):
+        for r in evaluate(
+            conn,
+            client,
+            items,
+            cfg["retrieval"]["top_k"],
+            cfg["retrieval"]["relevance_threshold"],
+            cfg["retrieval"].get("method", "rerank"),
+            cfg["retrieval"].get("query_enhancement"),
+            cfg["retrieval"].get("parent_document", False),
+            cfg["retrieval"].get("hype", False),
+            cfg["generation"]["provider"],
+            cfg["generation"]["model"],
+            gen_prompt,
+            cfg["generation"].get("format", ANSWER_FORMAT),
+        ):
             succeeded += 1
             for dim, passed in r["scores"].items():
                 per_dim[dim].append(passed)
@@ -65,7 +72,9 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
     return pass_rate, counts, len(items), succeeded
 
 
-def find_regressions(baseline: dict, current: dict, threshold: float, min_samples: int) -> list[dict]:
+def find_regressions(
+    baseline: dict, current: dict, threshold: float, min_samples: int
+) -> list[dict]:
     """Pure comparison: a dimension regresses if it had enough baseline samples and its
     pass rate dropped by more than `threshold`. Returns one record per regression."""
     out = []
@@ -74,7 +83,14 @@ def find_regressions(baseline: dict, current: dict, threshold: float, min_sample
             continue
         cur_rate = current.get(dim, 0.0)
         if base_rate - cur_rate > threshold:
-            out.append({"dim": dim, "baseline": base_rate, "current": cur_rate, "drop": base_rate - cur_rate})
+            out.append(
+                {
+                    "dim": dim,
+                    "baseline": base_rate,
+                    "current": cur_rate,
+                    "drop": base_rate - cur_rate,
+                }
+            )
     return out
 
 
@@ -84,23 +100,38 @@ def main() -> None:
     ap.add_argument("--split", choices=["dev", "test", "all"], default="dev")
     ap.add_argument("--threshold", type=float, default=THRESHOLD)
     ap.add_argument("--limit", type=int)
-    ap.add_argument("--update-baseline", action="store_true", help="write baseline_metrics.json and exit")
+    ap.add_argument(
+        "--update-baseline", action="store_true", help="write baseline_metrics.json and exit"
+    )
     args = ap.parse_args()
 
     pass_rate, counts, attempted, succeeded = measure(args.config, args.split, args.limit)
 
     if attempted and succeeded / attempted < MIN_COMPLETE:
-        print(f"ERROR: only {succeeded}/{attempted} items judged "
-              f"(<{MIN_COMPLETE:.0%}) — eval incomplete, not gating. Check API/DB.")
+        print(
+            f"ERROR: only {succeeded}/{attempted} items judged "
+            f"(<{MIN_COMPLETE:.0%}) — eval incomplete, not gating. Check API/DB."
+        )
         sys.exit(2)
 
     if args.update_baseline:
         cfg, _ = load_config(args.config)
-        BASELINE.write_text(json.dumps(
-            {"config_hash": cfg["hash"], "split": args.split, "pass_rate": pass_rate, "counts": counts},
-            indent=2) + "\n")
-        print(f"wrote baseline ({args.split} split, config {cfg['hash']}): "
-              + ", ".join(f"{d}={pass_rate[d]:.2f}(n={counts[d]})" for d in sorted(pass_rate)))
+        BASELINE.write_text(
+            json.dumps(
+                {
+                    "config_hash": cfg["hash"],
+                    "split": args.split,
+                    "pass_rate": pass_rate,
+                    "counts": counts,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        print(
+            f"wrote baseline ({args.split} split, config {cfg['hash']}): "
+            + ", ".join(f"{d}={pass_rate[d]:.2f}(n={counts[d]})" for d in sorted(pass_rate))
+        )
         return
 
     baseline = json.loads(BASELINE.read_text())

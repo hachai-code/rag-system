@@ -8,7 +8,7 @@ Run from the repo root:  uv run python -m evals.web_search.run_baseline
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -31,20 +31,29 @@ def langfuse_stats(question: str) -> dict:
         auth = (os.environ["LANGFUSE_PUBLIC_KEY"], os.environ["LANGFUSE_SECRET_KEY"])
         for _ in range(3):  # ingestion lags a few seconds behind flush()
             time.sleep(5)
-            traces = httpx.get(f"{host}/api/public/traces",
-                               params={"name": "web-search-agent", "limit": 1},
-                               auth=auth, timeout=30).json()["data"]
+            traces = httpx.get(
+                f"{host}/api/public/traces",
+                params={"name": "web-search-agent", "limit": 1},
+                auth=auth,
+                timeout=30,
+            ).json()["data"]
             if not traces or traces[0].get("input") != question:
                 continue
-            obs = httpx.get(f"{host}/api/public/observations",
-                            params={"traceId": traces[0]["id"], "limit": 100},
-                            auth=auth, timeout=30).json()["data"]
-            root = next(o for o in obs
-                        if o["type"] == "SPAN" and not o.get("parentObservationId"))
+            obs = httpx.get(
+                f"{host}/api/public/observations",
+                params={"traceId": traces[0]["id"], "limit": 100},
+                auth=auth,
+                timeout=30,
+            ).json()["data"]
+            root = next(o for o in obs if o["type"] == "SPAN" and not o.get("parentObservationId"))
             meta = root.get("metadata") or {}
-            return {"trace_id": traces[0]["id"],
-                    **{k: meta.get(k) for k in
-                       ("iterations", "cost_usd", "limit_hit", "citation_retries")}}
+            return {
+                "trace_id": traces[0]["id"],
+                **{
+                    k: meta.get(k)
+                    for k in ("iterations", "cost_usd", "limit_hit", "citation_retries")
+                },
+            }
         return {}
     except Exception:
         return {}
@@ -74,7 +83,7 @@ def main(ids: set[int] | None = None, tag: str = "", impl: str = "loop") -> None
             "critique": agent.SELF_CRITIQUE,
             "impl": impl,
             "seconds": seconds,
-            "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ran_at": datetime.now(UTC).isoformat(timespec="seconds"),
             **langfuse_stats(row["question"]),
         }
         with out.open("a") as f:
@@ -89,11 +98,20 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--ids", default="", help="comma-separated question ids (default: all)")
-    parser.add_argument("--tag", default="", help="write results_<tag>.jsonl instead of results.jsonl")
-    parser.add_argument("--no-critique", action="store_true",
-                        help="disable the self-critique pass (A/B control arm)")
-    parser.add_argument("--impl", choices=["loop", "graph"], default="loop",
-                        help="agent implementation: hand-written loop or LangGraph")
+    parser.add_argument(
+        "--tag", default="", help="write results_<tag>.jsonl instead of results.jsonl"
+    )
+    parser.add_argument(
+        "--no-critique",
+        action="store_true",
+        help="disable the self-critique pass (A/B control arm)",
+    )
+    parser.add_argument(
+        "--impl",
+        choices=["loop", "graph"],
+        default="loop",
+        help="agent implementation: hand-written loop or LangGraph",
+    )
     args = parser.parse_args()
 
     if args.impl == "graph":

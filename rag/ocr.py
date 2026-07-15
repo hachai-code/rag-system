@@ -33,13 +33,15 @@ def transcribe_page(client: OpenAI, png: bytes) -> str:
     resp = client.chat.completions.create(
         model=CONFIG.ocr_model,
         max_tokens=1500,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                {"type": "text", "text": PROMPT},
-            ],
-        }],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    {"type": "text", "text": PROMPT},
+                ],
+            }
+        ],
     )
     return resp.choices[0].message.content.strip()
 

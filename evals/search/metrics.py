@@ -74,7 +74,9 @@ def main() -> None:
             rec, rr = recall_at_k(retrieved, expected), reciprocal_rank(retrieved, expected)
             scored.append((len(expected), rec, rr))
             rank = next((i for i, cid in enumerate(retrieved[:K], 1) if cid in expected), None)
-            print(f"{r['id']:>3}  {r['category']:<11} {len(expected):>4} {'Y' if rec else '.':>3} {rank or '-':>4}")
+            print(
+                f"{r['id']:>3}  {r['category']:<11} {len(expected):>4} {'Y' if rec else '.':>3} {rank or '-':>4}"
+            )
 
     # Tight gold (<=6 specific chunks) is the discriminating subset; the full set
     # is inflated by broad keyword-labeled gold.
@@ -89,10 +91,13 @@ def main() -> None:
 
     record = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
-        "label": label, "n": len(full),
-        "recall_at_5": round(recall, 4), "mrr": round(mrr, 4),
+        "label": label,
+        "n": len(full),
+        "recall_at_5": round(recall, 4),
+        "mrr": round(mrr, 4),
         "tight_n": len(tight),
-        "tight_recall_at_5": round(t_recall, 4), "tight_mrr": round(t_mrr, 4),
+        "tight_recall_at_5": round(t_recall, 4),
+        "tight_mrr": round(t_mrr, 4),
     }
     with LOG_FILE.open("a") as f:
         f.write(json.dumps(record) + "\n")

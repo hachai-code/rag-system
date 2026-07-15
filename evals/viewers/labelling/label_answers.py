@@ -23,6 +23,7 @@ if WORK.exists():
 def persist():
     WORK.write_text(json.dumps({"filename": FILENAME, "entries": ENTRIES}))
 
+
 DROP_JS = """
 const dz = document.getElementById('dz'), f = document.getElementById('file');
 dz.onclick = () => f.click();
@@ -38,11 +39,21 @@ def dropzone(error=None):
         P("Expects records with question, rag_answer, and label fields."),
         P(error, style="color:red") if error else "",
         Form(
-            Input(type="file", name="file", accept=".jsonl", id="file",
-                  onchange="this.form.submit()", style="display:none"),
-            Div("Drop a .jsonl here, or click to browse", id="dz",
-                style="border:2px dashed #888; padding:3rem; text-align:center; cursor:pointer"),
-            method="post", action=upload,
+            Input(
+                type="file",
+                name="file",
+                accept=".jsonl",
+                id="file",
+                onchange="this.form.submit()",
+                style="display:none",
+            ),
+            Div(
+                "Drop a .jsonl here, or click to browse",
+                id="dz",
+                style="border:2px dashed #888; padding:3rem; text-align:center; cursor:pointer",
+            ),
+            method="post",
+            action=upload,
         ),
         Script(DROP_JS),
     )
@@ -55,21 +66,34 @@ def find(id):
 def field(e, name, **kw):
     # Autosave textarea: posts ~0.5s after typing pauses (and on blur), swapping
     # only the status span (never itself), so the cursor isn't disturbed.
-    return Textarea(e[name], name=name,
-                    hx_post=f"/save/{e['id']}", hx_trigger="input changed delay:500ms, blur",
-                    hx_target=f"#status-{e['id']}", hx_swap="innerHTML", **kw)
+    return Textarea(
+        e[name],
+        name=name,
+        hx_post=f"/save/{e['id']}",
+        hx_trigger="input changed delay:500ms, blur",
+        hx_target=f"#status-{e['id']}",
+        hx_swap="innerHTML",
+        **kw,
+    )
 
 
-ANS_BOX = ("max-height:32rem; overflow:auto; line-height:1.6; color:#000; background:#fff; "
-           "padding:1rem 1.25rem; border-radius:6px; border:1px solid #ccc")
+ANS_BOX = (
+    "max-height:32rem; overflow:auto; line-height:1.6; color:#000; background:#fff; "
+    "padding:1rem 1.25rem; border-radius:6px; border:1px solid #ccc"
+)
 
 
 def answer_view(e):
     i = e["id"]
     return Div(
         Div(e["rag_answer"] or "(no answer)", cls="marked", style=ANS_BOX),
-        A("edit", hx_get=f"/edit_ans/{i}", hx_target=f"#ans-{i}", hx_swap="outerHTML",
-          style="cursor:pointer"),
+        A(
+            "edit",
+            hx_get=f"/edit_ans/{i}",
+            hx_target=f"#ans-{i}",
+            hx_swap="outerHTML",
+            style="cursor:pointer",
+        ),
         id=f"ans-{i}",
     )
 
@@ -78,8 +102,13 @@ def answer_edit(e):
     i = e["id"]
     return Div(
         field(e, "rag_answer", style="width:100%; height:24rem"),
-        A("done", hx_get=f"/view_ans/{i}", hx_target=f"#ans-{i}", hx_swap="outerHTML",
-          style="cursor:pointer"),
+        A(
+            "done",
+            hx_get=f"/view_ans/{i}",
+            hx_target=f"#ans-{i}",
+            hx_swap="outerHTML",
+            style="cursor:pointer",
+        ),
         id=f"ans-{i}",
     )
 
@@ -87,13 +116,25 @@ def answer_edit(e):
 def card(e):
     i = e["id"]
     left = Div(
-        Div(H4(f"#{i}", style="display:inline; margin-right:1rem"),
-            Button("delete", hx_post=f"/delete/{i}", hx_target=f"#row-{i}", hx_swap="outerHTML",
-                   hx_confirm="Delete this entry?", cls="secondary outline",
-                   style="display:inline; width:auto; padding:0.1rem 0.6rem")),
+        Div(
+            H4(f"#{i}", style="display:inline; margin-right:1rem"),
+            Button(
+                "delete",
+                hx_post=f"/delete/{i}",
+                hx_target=f"#row-{i}",
+                hx_swap="outerHTML",
+                hx_confirm="Delete this entry?",
+                cls="secondary outline",
+                style="display:inline; width:auto; padding:0.1rem 0.6rem",
+            ),
+        ),
         Label("Question", field(e, "question", rows=2, style="width:100%")),
-        Label("Label", field(e, "label", style="width:100%; height:20rem",
-                             placeholder="Your label / judgment…")),
+        Label(
+            "Label",
+            field(
+                e, "label", style="width:100%; height:20rem", placeholder="Your label / judgment…"
+            ),
+        ),
         Small(id=f"status-{i}", style="color:green"),
     )
     right = Div(Label("Answer"), answer_view(e))
@@ -110,11 +151,20 @@ def index():
     labelled = sum(1 for e in ENTRIES if e["label"])
     return Titled(
         f"{FILENAME} — labelling",
-        P(A("⬇ Download .jsonl", href=download, role="button"), " ",
-          Form(Button("+ Add entry"), method="post", action=add, style="display:inline"), " ",
-          A("load a different file", href=reset)),
-        P(B(f"{labelled} / {len(ENTRIES)} labelled"),
-          Small("  ·  autosaves as you type; survives restarts; Download for a file copy", style="color:#888")),
+        P(
+            A("⬇ Download .jsonl", href=download, role="button"),
+            " ",
+            Form(Button("+ Add entry"), method="post", action=add, style="display:inline"),
+            " ",
+            A("load a different file", href=reset),
+        ),
+        P(
+            B(f"{labelled} / {len(ENTRIES)} labelled"),
+            Small(
+                "  ·  autosaves as you type; survives restarts; Download for a file copy",
+                style="color:#888",
+            ),
+        ),
         *[card(e) for e in ENTRIES],
     )
 
@@ -127,9 +177,15 @@ async def upload(file: UploadFile):
         rows = [json.loads(l) for l in text.splitlines() if l.strip()]
     except Exception as e:
         return dropzone(error=f"{file.filename}: not valid JSONL ({e})")
-    ENTRIES = [{"id": r.get("id"), "question": r.get("question", ""),
-                "rag_answer": r.get("rag_answer", ""), "label": r.get("label", "")}
-               for r in rows]
+    ENTRIES = [
+        {
+            "id": r.get("id"),
+            "question": r.get("question", ""),
+            "rag_answer": r.get("rag_answer", ""),
+            "label": r.get("label", ""),
+        }
+        for r in rows
+    ]
     FILENAME = file.filename or "labels.jsonl"
     LOADED = True
     persist()
@@ -150,8 +206,14 @@ def save(id: int, question: str = None, rag_answer: str = None, label: str = Non
 
 @rt
 def add():
-    ENTRIES.append({"id": max((e["id"] for e in ENTRIES), default=0) + 1,
-                    "question": "", "rag_answer": "", "label": ""})
+    ENTRIES.append(
+        {
+            "id": max((e["id"] for e in ENTRIES), default=0) + 1,
+            "question": "",
+            "rag_answer": "",
+            "label": "",
+        }
+    )
     persist()
     return Redirect(index)
 
@@ -187,8 +249,11 @@ def reset():
 @rt
 def download():
     body = "".join(json.dumps(e) + "\n" for e in ENTRIES)
-    return Response(body, media_type="application/x-ndjson",
-                    headers={"Content-Disposition": f'attachment; filename="{FILENAME}"'})
+    return Response(
+        body,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{FILENAME}"'},
+    )
 
 
 serve(port=5002)

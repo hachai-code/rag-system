@@ -21,8 +21,15 @@ import time
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
-    EVAL_FILE, JUDGE_MODEL, REASONING_OFF, RUBRICS, SYSTEM, Verdict, eval_items,
-    judge_client, rag_answer,
+    EVAL_FILE,
+    JUDGE_MODEL,
+    REASONING_OFF,
+    RUBRICS,
+    SYSTEM,
+    Verdict,
+    eval_items,
+    judge_client,
+    rag_answer,
 )
 from rag import GEN_MODEL, RELEVANCE_THRESHOLD, TOP_K
 from rag.db import connect
@@ -44,8 +51,12 @@ def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: 
         response_model=Verdict,
         extra_body=REASONING_OFF,
         messages=[
-            {"role": "system", "content": SYSTEM.format(
-                name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def)},
+            {
+                "role": "system",
+                "content": SYSTEM.format(
+                    name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def
+                ),
+            },
             {"role": "user", "content": user},
         ],
     )
@@ -90,7 +101,9 @@ def main() -> None:
                 t0 = time.perf_counter()
                 scores, rationales, in_tok, out_tok = {}, {}, 0, 0
                 for code in item["axial_codes"]:
-                    verdict, it, ot = judge_with_usage(client, code, item["question"], ans, item["ideal_answer"])
+                    verdict, it, ot = judge_with_usage(
+                        client, code, item["question"], ans, item["ideal_answer"]
+                    )
                     scores[code], rationales[code] = verdict.passed, verdict.rationale
                     in_tok, out_tok = in_tok + it, out_tok + ot
                 latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -104,13 +117,23 @@ def main() -> None:
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (run_id, item["id"], item["question"], ans,
-                 Jsonb(scores), Jsonb(rationales), cost, latency_ms),
+                (
+                    run_id,
+                    item["id"],
+                    item["question"],
+                    ans,
+                    Jsonb(scores),
+                    Jsonb(rationales),
+                    cost,
+                    latency_ms,
+                ),
             )
             conn.commit()
             judged += 1
             marks = " ".join(f"{c}:{'P' if p else 'F'}" for c, p in scores.items())
-            print(f"  [{judged:>2}/{n}] item {item['id']:>2}  {marks}  ${cost:.4f}  {latency_ms:>5}ms  {item['question'][:36]}")
+            print(
+                f"  [{judged:>2}/{n}] item {item['id']:>2}  {marks}  ${cost:.4f}  {latency_ms:>5}ms  {item['question'][:36]}"
+            )
 
     print(f"\nrun {run_id}: judged {judged} item(s)")
 

@@ -45,9 +45,15 @@ def pull_trace(conn, question: str) -> dict:
     """One trace from the live pipeline: the retrieved chunks plus the answer (or the
     refusal the relevance gate would return, so a refused query is reviewable too)."""
     hits = search(conn, question)
-    chunks = [{"title": h["title"], "source": h["source"],
-               "distance": round(float(h["distance"]), 4), "content": h["content"]}
-              for h in hits]
+    chunks = [
+        {
+            "title": h["title"],
+            "source": h["source"],
+            "distance": round(float(h["distance"]), 4),
+            "content": h["content"],
+        }
+        for h in hits
+    ]
     gated = not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD
     text = NO_ANSWER if gated else answer(question, hits)[0]
     return {"chunks": chunks, "answer": text}
@@ -63,8 +69,13 @@ def pull() -> None:
     with connect() as conn, TRACES.open("a") as out:
         for q in todo:
             trace = pull_trace(conn, q["question"])
-            out.write(json.dumps({"id": q["id"], "question": q["question"], **trace, "note": ""},
-                                 ensure_ascii=False) + "\n")
+            out.write(
+                json.dumps(
+                    {"id": q["id"], "question": q["question"], **trace, "note": ""},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             out.flush()
             print(f"  pulled #{q['id']:>2}  {len(trace['chunks'])} chunks  {q['question'][:50]}")
     print(f"{TRACES}: {len(load(TRACES))} traces")

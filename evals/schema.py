@@ -4,7 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-AxialCode = Literal["A", "B", "C", "D", "E"]  # A=Security/IP, B=Retrieval, C=Generation, D=Grounding, E=Formatting
+AxialCode = Literal[
+    "A", "B", "C", "D", "E"
+]  # A=Security/IP, B=Retrieval, C=Generation, D=Grounding, E=Formatting
 
 
 class EvalItem(BaseModel):

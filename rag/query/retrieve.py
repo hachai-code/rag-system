@@ -345,12 +345,12 @@ def _stitch(rows: list[dict], target_index: int) -> tuple[str, str, str]:
     for row in rows:
         lines = row["content"].split("\n")
         if row["chunk_index"] < target_index:
-            before.extend(lines[_overlap(before, lines):])
+            before.extend(lines[_overlap(before, lines) :])
         elif row["chunk_index"] == target_index:
             chunk = lines
-            del before[len(before) - _overlap(before, lines):]  # trim before's tail
+            del before[len(before) - _overlap(before, lines) :]  # trim before's tail
         else:
-            after.extend(lines[_overlap(chunk + after, lines):])
+            after.extend(lines[_overlap(chunk + after, lines) :])
     return "\n".join(before), "\n".join(chunk), "\n".join(after)
 
 
@@ -378,9 +378,7 @@ def source_passage(conn: psycopg.Connection, chunk_id: int, window: int = SOURCE
     ).fetchall()
 
     before, chunk, after = _stitch(rows, target["chunk_index"])
-    heading = next(
-        (r["heading"] for r in rows if r["chunk_index"] == target["chunk_index"]), None
-    )
+    heading = next((r["heading"] for r in rows if r["chunk_index"] == target["chunk_index"]), None)
     return {
         "title": doc["title"],
         "section": heading or doc["section"],

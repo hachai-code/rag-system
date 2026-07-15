@@ -85,18 +85,21 @@ def candidate_chunks(conn: psycopg.Connection, per_doc: int) -> list[dict]:
 
 def make_question(client: OpenAI, content: str) -> str:
     response = client.chat.completions.create(
-        model=GEN_MODEL, max_tokens=100,
-        messages=[{"role": "system", "content": GEN_PROMPT},
-                  {"role": "user", "content": content}],
+        model=GEN_MODEL,
+        max_tokens=100,
+        messages=[{"role": "system", "content": GEN_PROMPT}, {"role": "user", "content": content}],
     )
     return response.choices[0].message.content.strip()
 
 
 def reference_answer(client: OpenAI, question: str, content: str) -> str:
     response = client.chat.completions.create(
-        model=REF_MODEL, max_tokens=512,
-        messages=[{"role": "system", "content": REF_PROMPT},
-                  {"role": "user", "content": f"Passage:\n{content}\n\nQuestion: {question}"}],
+        model=REF_MODEL,
+        max_tokens=512,
+        messages=[
+            {"role": "system", "content": REF_PROMPT},
+            {"role": "user", "content": f"Passage:\n{content}\n\nQuestion: {question}"},
+        ],
     )
     return response.choices[0].message.content.strip()
 
@@ -122,8 +125,9 @@ def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else N_ITEMS
     # max_retries above the default 2 gives the question/reference calls extra headroom
     # on transient 429/5xx during a long run (the RAG answer call retries on its own).
-    client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"],
-                    max_retries=4)
+    client = OpenAI(
+        base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"], max_retries=4
+    )
     rows = existing_rows()
     done = {r["source"]["chunk_id"] for r in rows}
 

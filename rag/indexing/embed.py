@@ -19,8 +19,8 @@ from .chunk import Chunk
 from .ingest import Document
 
 VOYAGE_MODEL = CONFIG.voyage_model
-EMBED_DIM = 1024   # must match the VECTOR(1024) column in db/migrations/
-BATCH_SIZE = 128   # texts per request; limits are 1000 texts / 320K tokens
+EMBED_DIM = 1024  # must match the VECTOR(1024) column in db/migrations/
+BATCH_SIZE = 128  # texts per request; limits are 1000 texts / 320K tokens
 
 # HyPE: cheap model that writes the hypothetical questions, and how many per chunk.
 HYPE_GEN_MODEL = CONFIG.gen_models["flash"]
@@ -96,16 +96,21 @@ def store_chunks(
     conn.execute("DELETE FROM chunks WHERE document_id = ANY(%s)", (list(doc_ids.values()),))
     rows = [
         (
-            doc_ids[c.source], c.chunk_index, c.content, embedding,
-            Jsonb({
-                "heading": c.heading,
-                "start": c.start,
-                "end": c.end,
-                "speakers": list(c.speakers) if c.speakers else None,
-                "primary_speaker": c.primary_speaker,
-            }),
+            doc_ids[c.source],
+            c.chunk_index,
+            c.content,
+            embedding,
+            Jsonb(
+                {
+                    "heading": c.heading,
+                    "start": c.start,
+                    "end": c.end,
+                    "speakers": list(c.speakers) if c.speakers else None,
+                    "primary_speaker": c.primary_speaker,
+                }
+            ),
         )
-        for c, embedding in zip(chunks, embeddings)
+        for c, embedding in zip(chunks, embeddings, strict=True)
     ]
     conn.cursor().executemany(
         """
@@ -123,7 +128,9 @@ HYPE_PROMPT = (
 )
 
 
-def hypothetical_questions(content: str, n: int = N_HYPE_QUESTIONS, model: str = HYPE_GEN_MODEL) -> list[str]:
+def hypothetical_questions(
+    content: str, n: int = N_HYPE_QUESTIONS, model: str = HYPE_GEN_MODEL
+) -> list[str]:
     """N hypothetical questions the chunk answers (HyPE), via the cheap flash model."""
     text = complete(HYPE_PROMPT.format(n=n, content=content), model)
     return [line.strip() for line in text.splitlines() if line.strip()][:n]
@@ -160,7 +167,7 @@ def populate_hype(
     conn.execute("DELETE FROM chunk_questions WHERE chunk_id = ANY(%s)", ([r[0] for r in rows],))
     conn.cursor().executemany(
         "INSERT INTO chunk_questions (chunk_id, question, embedding) VALUES (%s, %s, %s)",
-        list(zip(ids, questions, embeddings)),
+        list(zip(ids, questions, embeddings, strict=True)),
     )
     return len(questions)
 
@@ -168,8 +175,8 @@ def populate_hype(
 def main() -> None:
     """Populate chunk_questions for HyPE retrieval. Run after the main index is built:
 
-        uv run python -m rag.indexing.embed            # whole corpus
-        uv run python -m rag.indexing.embed --limit 20 # first 20 chunks (testing)
+    uv run python -m rag.indexing.embed            # whole corpus
+    uv run python -m rag.indexing.embed --limit 20 # first 20 chunks (testing)
     """
     import argparse
 
@@ -186,9 +193,12 @@ def main() -> None:
     with psycopg.connect(DB_URL) as conn:
         register_vector(conn)
         if args.limit:
-            chunk_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM chunks ORDER BY id LIMIT %s", (args.limit,)
-            ).fetchall()]
+            chunk_ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM chunks ORDER BY id LIMIT %s", (args.limit,)
+                ).fetchall()
+            ]
         else:
             chunk_ids = None
         n = populate_hype(conn, client, tracker, chunk_ids)

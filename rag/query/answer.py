@@ -39,9 +39,9 @@ SYSTEM_PROMPT = (
     "and phrasing, and do not add interpretations, inferences, or claims that the "
     "documents do not state. "
     "Begin with the substance of the answer itself. Never open with a meta-comment "
-    "about your sources or method — do not start with phrases like \"Based solely on "
-    "the provided documents\", \"According to the documents\", or \"Based on the "
-    "context\"; go straight to the answer."
+    'about your sources or method — do not start with phrases like "Based solely on '
+    'the provided documents", "According to the documents", or "Based on the '
+    'context"; go straight to the answer.'
 )
 
 
@@ -119,14 +119,20 @@ def _proof(hits: list[dict]) -> list[dict]:
     mapping. Same dict shape as _citations()/_chunk_citations() so callers (app.py's
     Citation model) don't care which path produced them."""
     return [
-        {"claim": "", "cited_text": hit["content"], "chunk_id": hit["id"],
-         "title": hit["title"], "source": hit["source"]}
+        {
+            "claim": "",
+            "cited_text": hit["content"],
+            "chunk_id": hit["id"],
+            "title": hit["title"],
+            "source": hit["source"],
+        }
         for hit in hits
     ]
 
 
-def answer_prose(question: str, hits: list[dict],
-                 model: str = GEN_MODEL, system: str = SYSTEM_PROMPT) -> tuple[str, list[dict]]:
+def answer_prose(
+    question: str, hits: list[dict], model: str = GEN_MODEL, system: str = SYSTEM_PROMPT
+) -> tuple[str, list[dict]]:
     """One synthesized prose answer over the chunks (openai-compat path).
 
     No structured schema — a raw completion is what makes the model write flowing
@@ -179,9 +185,14 @@ def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, l
     return text, citations
 
 
-def answer(question: str, hits: list[dict],
-           model: str = GEN_MODEL, system: str = SYSTEM_PROMPT,
-           provider: str = GEN_PROVIDER, fmt: str = ANSWER_FORMAT) -> tuple[str, list[dict]]:
+def answer(
+    question: str,
+    hits: list[dict],
+    model: str = GEN_MODEL,
+    system: str = SYSTEM_PROMPT,
+    provider: str = GEN_PROVIDER,
+    fmt: str = ANSWER_FORMAT,
+) -> tuple[str, list[dict]]:
     """Answer over the retrieved chunks and return (answer_text, citations).
 
     Dispatches by `provider` (see README); `fmt` picks prose vs structured claims on
@@ -231,9 +242,14 @@ def answer(question: str, hits: list[dict],
     return _chunk_citations(grounded, hits)
 
 
-def answer_stream(question: str, hits: list[dict],
-                  model: str = GEN_MODEL, provider: str = GEN_PROVIDER,
-                  fmt: str = ANSWER_FORMAT, system: str = SYSTEM_PROMPT):
+def answer_stream(
+    question: str,
+    hits: list[dict],
+    model: str = GEN_MODEL,
+    provider: str = GEN_PROVIDER,
+    fmt: str = ANSWER_FORMAT,
+    system: str = SYSTEM_PROMPT,
+):
     """Yield the answer incrementally, then one citation record per source.
 
     Both adapters keep the text-first / citations-last contract. Prose token-streams
@@ -256,7 +272,9 @@ def answer_stream(question: str, hits: list[dict],
         return
 
     if fmt == "claims":
-        text, citations = answer(question, hits, model=model, provider=provider, fmt=fmt, system=system)
+        text, citations = answer(
+            question, hits, model=model, provider=provider, fmt=fmt, system=system
+        )
         yield {"type": "text", "text": text}
         for cite in citations:
             yield {"type": "citation", **cite}
@@ -300,4 +318,4 @@ if __name__ == "__main__":
         # always hold — if it fails, the citation is not real.
         grounded = cite["cited_text"] in by_id[cite["chunk_id"]]
         mark = "ok" if grounded else "HALLUCINATED"
-        print(f"  [{mark}] {cite['title'][:40]} — \"{cite['cited_text'][:70]}\"")
+        print(f'  [{mark}] {cite["title"][:40]} — "{cite["cited_text"][:70]}"')

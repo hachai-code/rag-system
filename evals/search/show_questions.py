@@ -22,9 +22,19 @@ def main() -> None:
             continue
         row = json.loads(line)
         ideal = " ".join(row["ideal_answer"].split())  # collapse transcript newlines
-        print(f"Q{row['id']:>2}  ·  {row['source']['title'][:45]}  ·  chunk {row['expected_chunk_ids'][0]}")
-        print(textwrap.fill(row["question"], width=90, initial_indent="    ", subsequent_indent="    "))
-        print(textwrap.fill(f"ideal: {ideal[:220]}…", width=90, initial_indent="    ", subsequent_indent="    "))
+        print(
+            f"Q{row['id']:>2}  ·  {row['source']['title'][:45]}  ·  chunk {row['expected_chunk_ids'][0]}"
+        )
+        print(
+            textwrap.fill(
+                row["question"], width=90, initial_indent="    ", subsequent_indent="    "
+            )
+        )
+        print(
+            textwrap.fill(
+                f"ideal: {ideal[:220]}…", width=90, initial_indent="    ", subsequent_indent="    "
+            )
+        )
         print()
 
 

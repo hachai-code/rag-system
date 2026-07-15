@@ -13,13 +13,9 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from rag.app import AskRequest, _no_relevant_hits
-from rag.query.deepagent import _step_label, format_hits_for_deepagent
-from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
     RELEVANCE_THRESHOLD,
-    Claim,
     GroundedAnswer,
     _chunk_citations,
     _citations,
@@ -29,14 +25,25 @@ from rag import (
     rrf,
     search,
 )
+from rag.app import AskRequest, _no_relevant_hits
+from rag.query.deepagent import _step_label, format_hits_for_deepagent
+from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
 # the citation's document_index, exactly as the live code does.
 HITS = [
-    {"id": 11, "title": "Day 1", "source": "day1.rtf",
-     "content": "dopamine reroutes to the old brain"},
-    {"id": 22, "title": "Day 2", "source": "day2.rtf",
-     "content": "stillness is where innerdance begins"},
+    {
+        "id": 11,
+        "title": "Day 1",
+        "source": "day1.rtf",
+        "content": "dopamine reroutes to the old brain",
+    },
+    {
+        "id": 22,
+        "title": "Day 2",
+        "source": "day2.rtf",
+        "content": "stillness is where innerdance begins",
+    },
 ]
 
 
@@ -85,8 +92,9 @@ def test_chunk_citation_maps_to_its_hit():
 
 
 def test_out_of_range_chunk_index_is_dropped():
-    grounded = _grounded([{"statement": "Cites a chunk that wasn't retrieved.",
-                           "chunk_indices": [99]}])
+    grounded = _grounded(
+        [{"statement": "Cites a chunk that wasn't retrieved.", "chunk_indices": [99]}]
+    )
     text, citations = _chunk_citations(grounded, HITS)
     assert text == "Cites a chunk that wasn't retrieved."
     assert citations == []
@@ -129,7 +137,7 @@ def test_rrf_fuses_ranked_lists_into_one_order():
     in, so agreement across lists and a heavier weight both lift a chunk. The shared
     helper drives hybrid_search and multi-query fusion alike."""
     vector = [{"id": 1}, {"id": 2}, {"id": 3}]  # ranks 1, 2, 3
-    keyword = [{"id": 3}, {"id": 4}]            # ranks 1, 2
+    keyword = [{"id": 3}, {"id": 4}]  # ranks 1, 2
     fused = [h["id"] for h in rrf([(1.0, vector), (0.5, keyword)], k=60)]
     # 3 wins on cross-list agreement; 1 > 2 by rank; 4 last on the down-weighted list.
     assert fused == [3, 1, 2, 4]
@@ -148,12 +156,27 @@ def test_hype_dedupes_to_parent_keeping_min_distance():
     first. The served `content` is the raw parent chunk — the question is only what was
     matched, never what's stored on the chunk or shown to the generator."""
     matches = [
-        {"id": 11, "title": "Day 1", "source": "day1.rtf",
-         "content": "dopamine reroutes to the old brain", "distance": 0.40},
-        {"id": 22, "title": "Day 2", "source": "day2.rtf",
-         "content": "stillness is where innerdance begins", "distance": 0.30},
-        {"id": 11, "title": "Day 1", "source": "day1.rtf",
-         "content": "dopamine reroutes to the old brain", "distance": 0.20},
+        {
+            "id": 11,
+            "title": "Day 1",
+            "source": "day1.rtf",
+            "content": "dopamine reroutes to the old brain",
+            "distance": 0.40,
+        },
+        {
+            "id": 22,
+            "title": "Day 2",
+            "source": "day2.rtf",
+            "content": "stillness is where innerdance begins",
+            "distance": 0.30,
+        },
+        {
+            "id": 11,
+            "title": "Day 1",
+            "source": "day1.rtf",
+            "content": "dopamine reroutes to the old brain",
+            "distance": 0.20,
+        },
     ]
     deduped = _dedupe_to_parent(matches)
     assert [(h["id"], h["distance"]) for h in deduped] == [(11, 0.20), (22, 0.30)]
@@ -228,16 +251,22 @@ def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
     def fake_create(**kwargs):
         captured["system"] = kwargs["messages"][0]["content"]
         captured["stream"] = kwargs.get("stream")
-        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
-                for c in ["still", "ness ", "begins"]]
+        return [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=c))])
+            for c in ["still", "ness ", "begins"]
+        ]
 
-    fake_client = SimpleNamespace(chat=SimpleNamespace(
-        completions=SimpleNamespace(create=fake_create)))
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
     monkeypatch.setattr(answer_mod, "openrouter_client", lambda: fake_client)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
 
-    events = list(answer_mod.answer_stream(
-        "q?", HITS, provider="openai-compat", fmt="prose", system="OVERRIDE"))
+    events = list(
+        answer_mod.answer_stream(
+            "q?", HITS, provider="openai-compat", fmt="prose", system="OVERRIDE"
+        )
+    )
     texts = [e["text"] for e in events if e["type"] == "text"]
     cites = [e for e in events if e["type"] == "citation"]
     assert texts == ["still", "ness ", "begins"]  # streamed per-token, not one event
@@ -273,9 +302,11 @@ def test_todo_loop_breaker_passes_through_real_updates():
     from rag.query.deepagent import _TodoLoopBreaker
 
     request = SimpleNamespace(
-        tool_call={"name": "write_todos",
-                   "args": {"todos": [{"content": "new", "status": "pending"}]},
-                   "id": "tc1"},
+        tool_call={
+            "name": "write_todos",
+            "args": {"todos": [{"content": "new", "status": "pending"}]},
+            "id": "tc1",
+        },
         state={"todos": []},
     )
     sentinel = object()
@@ -288,6 +319,14 @@ def test_final_answer_falls_back_to_last_ai_text():
     from rag.query.deepagent import DeepAnswer, _final_answer
 
     assert _final_answer({"structured_response": DeepAnswer(answer="typed")}) == "typed"
-    assert _final_answer({"messages": [
-        HumanMessage(content="q"), AIMessage(content="prose answer"),
-    ]}) == "prose answer"
+    assert (
+        _final_answer(
+            {
+                "messages": [
+                    HumanMessage(content="q"),
+                    AIMessage(content="prose answer"),
+                ]
+            }
+        )
+        == "prose answer"
+    )

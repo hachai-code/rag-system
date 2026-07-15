@@ -88,18 +88,21 @@ def render_card(row: dict) -> str:
         f'<label class="g g-{g}"><input type="radio" name="grade-{row["id"]}" value="{g}">{g}</label>'
         for g in GRADES
     )
-    badge = '<span class="gold">gold retrieved</span>' if row["retrieved_gold"] \
+    badge = (
+        '<span class="gold">gold retrieved</span>'
+        if row["retrieved_gold"]
         else '<span class="miss">gold missed</span>'
+    )
     return f"""
 <section class="card">
   <div class="qhead">
-    <h2>Q{row['id']} <span class="src">{html.escape(row['source']['title'])}</span> {badge}</h2>
+    <h2>Q{row["id"]} <span class="src">{html.escape(row["source"]["title"])}</span> {badge}</h2>
     <div class="grades">{radios}</div>
   </div>
-  <p class="question">{html.escape(row['question'])}</p>
+  <p class="question">{html.escape(row["question"])}</p>
   <div class="cols">
-    <div class="col ref"><h3>Reference</h3><div>{br(row['reference_answer'])}</div></div>
-    <div class="col rag"><h3>RAG answer</h3><div>{br(row['rag_answer'])}</div></div>
+    <div class="col ref"><h3>Reference</h3><div>{br(row["reference_answer"])}</div></div>
+    <div class="col rag"><h3>RAG answer</h3><div>{br(row["rag_answer"])}</div></div>
   </div>
 </section>"""
 

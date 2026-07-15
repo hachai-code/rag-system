@@ -33,7 +33,22 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.15"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# pydantic-ai's E subset (E4/E7/E9, no E501: long prompt strings don't reflow) + bugbear.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# load_dotenv() must run before rag imports.
+"rag/__init__.py" = ["E402"]
+"evals/web_search/judge.py" = ["E402"]
+"evals/web_search/run_baseline.py" = ["E402"]
+# One-off tkinter labelling GUIs: star imports are idiomatic there.
+"evals/viewers/labelling/*.py" = ["F403", "F405", "E741"]
 
 [tool.pytest.ini_options]
 testpaths = ["evals"]

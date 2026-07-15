@@ -30,18 +30,19 @@ def count_tokens(text: str) -> int:
 class Segment:
     """One unit of attributed text: a timed ASR utterance, or a sentence of a
     speaker's turn in the dialogue PDF (which carries no timing)."""
+
     start: float | None
     end: float | None
-    speaker: str | None   # "pi" | "participant" | "doc romy" | None
-    text: str             # speaker label kept inline ("pi: ...")
+    speaker: str | None  # "pi" | "participant" | "doc romy" | None
+    text: str  # speaker label kept inline ("pi: ...")
 
 
 @dataclass
 class Document:
-    source: str    # path relative to the corpus root
+    source: str  # path relative to the corpus root
     title: str
-    date: str      # ISO date the file was last modified
-    section: str   # top-level corpus folder, e.g. "Maia"
+    date: str  # ISO date the file was last modified
+    section: str  # top-level corpus folder, e.g. "Maia"
     text: str
     n_tokens: int
     segments: list[Segment] | None = None  # timed utterances, transcripts only
@@ -62,9 +63,7 @@ def extract_pdf(path: Path) -> str:
 def extract_epub(path: Path) -> str:
     book = epub.read_epub(path)
     chapters = [
-        item.get_content()
-        for item in book.get_items()
-        if item.get_type() == ebooklib.ITEM_DOCUMENT
+        item.get_content() for item in book.get_items() if item.get_type() == ebooklib.ITEM_DOCUMENT
     ]
     return "\n".join(html_to_text(html) for html in chapters)
 
@@ -155,8 +154,12 @@ def parse_transcript(text: str) -> list[Segment]:
         body = m.group(3).strip()
         spk = SPEAKER.match(body)
         segments.append(
-            Segment(_to_seconds(m.group(1)), _to_seconds(m.group(2)),
-                    spk.group(1) if spk else None, body)
+            Segment(
+                _to_seconds(m.group(1)),
+                _to_seconds(m.group(2)),
+                spk.group(1) if spk else None,
+                body,
+            )
         )
     return segments
 
@@ -167,7 +170,9 @@ def parse_transcript(text: str) -> list[Segment]:
 # (Delicious-Italic), Doc Romy's roman (Delicious-Roman). Plain-text extraction loses
 # the font, so we read per-span fonts to recover who's speaking. See README.
 DIALOGUE_PDF = "transformation_medicine_ebook.pdf"
-_PAGE_NUMBER = re.compile(r"\d[\d\s]*\|[\d\s]*")  # footer page numbers leak as italic spans: "12 | 13"
+_PAGE_NUMBER = re.compile(
+    r"\d[\d\s]*\|[\d\s]*"
+)  # footer page numbers leak as italic spans: "12 | 13"
 _FRONT_MATTER = re.compile(r"ISBN|Copyright|Published by", re.IGNORECASE)
 
 
@@ -202,7 +207,11 @@ def extract_dialogue_pdf(path: Path) -> tuple[str, list[Segment]]:
     # Drop title/copyright front matter: start at the first substantial,
     # non-boilerplate turn (the "My name is Romy" self-introduction).
     start = next(
-        (i for i, (_, t) in enumerate(turns) if len(t.strip()) > 300 and not _FRONT_MATTER.search(t)),
+        (
+            i
+            for i, (_, t) in enumerate(turns)
+            if len(t.strip()) > 300 and not _FRONT_MATTER.search(t)
+        ),
         0,
     )
 

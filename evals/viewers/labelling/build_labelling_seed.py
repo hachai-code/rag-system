@@ -7,6 +7,7 @@ Joins three sources from the rag-system repo by question id:
 
 Writes labelling_seed.jsonl: {id, question, rag_answer, label} per line.
 """
+
 import json
 import re
 from pathlib import Path
@@ -40,23 +41,30 @@ def parse_txt_labels(text):
         if header.startswith("question"):
             current = norm(content)
         elif header.startswith("label") and current:
-            labels[current] = f"{labels[current]}\n{content}".strip() if current in labels else content
+            labels[current] = (
+                f"{labels[current]}\n{content}".strip() if current in labels else content
+            )
     return labels
 
 
 def main():
     eval_rows = [json.loads(l) for l in EVAL.read_text().splitlines() if l.strip()]
-    answers = {r["id"]: r["answer"]
-               for r in (json.loads(l) for l in JUDG.read_text().splitlines() if l.strip())}
+    answers = {
+        r["id"]: r["answer"]
+        for r in (json.loads(l) for l in JUDG.read_text().splitlines() if l.strip())
+    }
     # Stop before the taxonomy write-up so it isn't parsed as labels.
     labels = parse_txt_labels(TXT.read_text().split("-----")[0])
 
-    rows = [{
-        "id": r["id"],
-        "question": r["question"],
-        "rag_answer": answers.get(r["id"], ""),
-        "label": labels.get(norm(r["question"]), ""),
-    } for r in eval_rows]
+    rows = [
+        {
+            "id": r["id"],
+            "question": r["question"],
+            "rag_answer": answers.get(r["id"], ""),
+            "label": labels.get(norm(r["question"]), ""),
+        }
+        for r in eval_rows
+    ]
 
     OUT.write_text("".join(json.dumps(r) + "\n" for r in rows))
 

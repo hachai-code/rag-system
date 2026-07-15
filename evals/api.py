@@ -74,10 +74,7 @@ class RunDetail(BaseModel):
 
 
 def _split_map() -> dict[int, str]:
-    return {
-        row["id"]: row["split"]
-        for row in map(json.loads, EVAL_FILE.read_text().splitlines())
-    }
+    return {row["id"]: row["split"] for row in map(json.loads, EVAL_FILE.read_text().splitlines())}
 
 
 def _pass_rate(rows: list[dict]) -> dict[str, float]:
@@ -140,16 +137,22 @@ def evals_summary() -> EvalsSummary:
         if (rs[0]["config_hash"] or rs[0]["config_name"] or rs[0]["run_id"])
         == (last.config_hash or last.config_name or last.run_id)
     ]
-    final = FinalConfig(config_name=last.config_name, config_hash=last.config_hash,
-                        dev=None, test=None)
+    final = FinalConfig(
+        config_name=last.config_name, config_hash=last.config_hash, dev=None, test=None
+    )
     for split in ("dev", "test"):
         for rs in matching:
             in_split = [r for r in rs if splits.get(r["question_id"]) == split]
             if in_split:
-                setattr(final, split, SplitSummary(
-                    run_id=rs[0]["run_id"], n=len(in_split),
-                    pass_rate=_pass_rate(in_split),
-                ))
+                setattr(
+                    final,
+                    split,
+                    SplitSummary(
+                        run_id=rs[0]["run_id"],
+                        n=len(in_split),
+                        pass_rate=_pass_rate(in_split),
+                    ),
+                )
                 break
 
     return EvalsSummary(runs=runs, final=final)
@@ -173,12 +176,20 @@ def evals_run(run_id: int) -> RunDetail:
         ).fetchall()
     splits = _split_map()
     return RunDetail(
-        run_id=run["id"], created_at=run["created_at"], git_sha=run["git_sha"],
-        config_name=run["config_name"], config_hash=run["config_hash"],
+        run_id=run["id"],
+        created_at=run["created_at"],
+        git_sha=run["git_sha"],
+        config_name=run["config_name"],
+        config_hash=run["config_hash"],
         results=[
-            ResultRow(question_id=r["question_id"], question=r["question"],
-                      answer=r["answer"], split=splits.get(r["question_id"]),
-                      scores=r["scores"], rationales=r["rationales"])
+            ResultRow(
+                question_id=r["question_id"],
+                question=r["question"],
+                answer=r["answer"],
+                split=splits.get(r["question_id"]),
+                scores=r["scores"],
+                rationales=r["rationales"],
+            )
             for r in rows
         ],
     )

@@ -21,7 +21,7 @@ Run: uv run python -m evals.web_search.judge
 import json
 import os
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -40,14 +40,22 @@ JUDGE_MODEL = CONFIG.gen_models["flash"]
 METRICS = Path(__file__).parent / "analysis" / "baseline_metrics.json"
 NO_ANSWER = "Could not produce an answer."
 
-Category = Literal["bad_search_queries", "wrong_source_selection", "synthesis_error",
-                   "premature_stop", "citation_mismatch", "other"]
+Category = Literal[
+    "bad_search_queries",
+    "wrong_source_selection",
+    "synthesis_error",
+    "premature_stop",
+    "citation_mismatch",
+    "other",
+]
 
 
 class FactVerdict(BaseModel):
     fact: str
-    evidence: str = Field(description="Verbatim quote from the answer supporting the "
-                                      "verdict; empty string if the fact is absent.")
+    evidence: str = Field(
+        description="Verbatim quote from the answer supporting the "
+        "verdict; empty string if the fact is absent."
+    )
     status: Literal["present", "missing", "contradicted"]
 
 
@@ -61,10 +69,14 @@ class Correctness(BaseModel):
 class FailureAnalysis(BaseModel):
     rationale: str = Field(description="One or two sentences naming the failure mechanism.")
     categories: list[Category] = Field(description="All that apply, primary cause first.")
-    emerging_category: str = Field(default="", description="Short kebab-case name for a "
-        "failure mechanism the fixed categories don't capture; empty if they do.")
-    emerging_definition: str = Field(default="", description="One sentence defining the "
-        "emerging category; empty if none.")
+    emerging_category: str = Field(
+        default="",
+        description="Short kebab-case name for a "
+        "failure mechanism the fixed categories don't capture; empty if they do.",
+    )
+    emerging_definition: str = Field(
+        default="", description="One sentence defining the emerging category; empty if none."
+    )
 
 
 CORRECTNESS_SYSTEM = """You are a strict evaluator grading a web-research agent's answer against ground-truth criteria.
@@ -97,8 +109,9 @@ Prefer these fixed categories. But if the actual failure mechanism is not genuin
 def _langfuse_get(path: str, **params) -> list[dict]:
     host = os.environ["LANGFUSE_BASE_URL"].rstrip("/")
     auth = (os.environ["LANGFUSE_PUBLIC_KEY"], os.environ["LANGFUSE_SECRET_KEY"])
-    return httpx.get(f"{host}/api/public/{path}", params=params, auth=auth,
-                     timeout=30).json()["data"]
+    return httpx.get(f"{host}/api/public/{path}", params=params, auth=auth, timeout=30).json()[
+        "data"
+    ]
 
 
 def trajectory_digest(row: dict) -> str:
@@ -129,19 +142,26 @@ def judge_correctness(client, row: dict) -> Correctness:
     if row["answer"].startswith(NO_ANSWER):
         return Correctness(
             rationale="The agent produced no answer (best-effort fallback failed).",
-            fact_verdicts=[FactVerdict(fact=f, evidence="", status="missing")
-                           for f in row["facts"]],
+            fact_verdicts=[
+                FactVerdict(fact=f, evidence="", status="missing") for f in row["facts"]
+            ],
             overall="wrong",
         )
     facts = "\n".join(f"{i}. {f}" for i, f in enumerate(row["facts"], 1))
     return client.chat.completions.create(
-        model=JUDGE_MODEL, max_tokens=2000, max_retries=2, response_model=Correctness,
+        model=JUDGE_MODEL,
+        max_tokens=2000,
+        max_retries=2,
+        response_model=Correctness,
         messages=[
             {"role": "system", "content": CORRECTNESS_SYSTEM},
-            {"role": "user", "content": f"Question:\n{row['question']}\n\n"
-                                        f"A correct answer must contain:\n{row['must_contain']}\n\n"
-                                        f"Ground-truth facts:\n{facts}\n\n"
-                                        f"Answer to grade:\n{row['answer']}"},
+            {
+                "role": "user",
+                "content": f"Question:\n{row['question']}\n\n"
+                f"A correct answer must contain:\n{row['must_contain']}\n\n"
+                f"Ground-truth facts:\n{facts}\n\n"
+                f"Answer to grade:\n{row['answer']}",
+            },
         ],
     )
 
@@ -151,14 +171,20 @@ def judge_failure(client, row: dict, verdict: Correctness) -> FailureAnalysis:
     trajectory = digest if digest else "(trajectory unavailable — judge from the answer alone)"
     verdicts = "\n".join(f"- [{v.status}] {v.fact}" for v in verdict.fact_verdicts)
     return client.chat.completions.create(
-        model=JUDGE_MODEL, max_tokens=1500, max_retries=2, response_model=FailureAnalysis,
+        model=JUDGE_MODEL,
+        max_tokens=1500,
+        max_retries=2,
+        response_model=FailureAnalysis,
         messages=[
             {"role": "system", "content": FAILURE_SYSTEM},
-            {"role": "user", "content": f"Question:\n{row['question']}\n\n"
-                                        f"Verdict: {verdict.overall} — {verdict.rationale}\n"
-                                        f"Fact verdicts:\n{verdicts}\n\n"
-                                        f"Trajectory:\n{trajectory}\n\n"
-                                        f"Answer:\n{row['answer']}"},
+            {
+                "role": "user",
+                "content": f"Question:\n{row['question']}\n\n"
+                f"Verdict: {verdict.overall} — {verdict.rationale}\n"
+                f"Fact verdicts:\n{verdicts}\n\n"
+                f"Trajectory:\n{trajectory}\n\n"
+                f"Answer:\n{row['answer']}",
+            },
         ],
     )
 
@@ -166,8 +192,9 @@ def judge_failure(client, row: dict, verdict: Correctness) -> FailureAnalysis:
 def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -> None:
     overall = Counter(j["overall"] for j in judgments.values())
     facts_total = sum(len(r["facts"]) for r in rows)
-    facts_present = sum(1 for j in judgments.values()
-                        for v in j["fact_verdicts"] if v["status"] == "present")
+    facts_present = sum(
+        1 for j in judgments.values() for v in j["fact_verdicts"] if v["status"] == "present"
+    )
     per_category = {}
     for r in rows:
         c = per_category.setdefault(r["category"], Counter())
@@ -183,11 +210,10 @@ def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -
     # Gate metric: judged correct AND carries at least one (mechanically
     # trace-verified) markdown citation link.
     correct_and_cited = sum(
-        1 for r in rows
-        if judgments[r["id"]]["overall"] == "correct" and _cited_urls(r["answer"])
+        1 for r in rows if judgments[r["id"]]["overall"] == "correct" and _cited_urls(r["answer"])
     )
     metrics = {
-        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "date": datetime.now(UTC).isoformat(timespec="seconds"),
         "agent_model": rows[0]["model"],
         "judge_model": JUDGE_MODEL,
         "n": len(rows),
@@ -205,9 +231,11 @@ def write_metrics(rows: list[dict], judgments: dict[int, dict], tag: str = "") -
 
     n_correct = overall.get("correct", 0)
     fail_str = ", ".join(f"{k} x{v}" for k, v in failures.most_common()) or "none"
-    print(f"\n{n_correct}/{len(rows)} correct ({overall.get('partial', 0)} partial, "
-          f"{overall.get('wrong', 0)} wrong) | correct-and-cited {correct_and_cited}/{len(rows)} "
-          f"| fact recall {facts_present}/{facts_total} | failures: {fail_str}")
+    print(
+        f"\n{n_correct}/{len(rows)} correct ({overall.get('partial', 0)} partial, "
+        f"{overall.get('wrong', 0)} wrong) | correct-and-cited {correct_and_cited}/{len(rows)} "
+        f"| fact recall {facts_present}/{facts_total} | failures: {fail_str}"
+    )
     for label, n in emerging.most_common():
         flag = "  << taxonomy-v2 candidate" if n >= 2 else ""
         print(f"  emerging: {label} x{n}{flag}")
@@ -253,6 +281,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tag", default="",
-                        help="read results_<tag>.jsonl, write judgments_<tag>.jsonl, skip metrics file")
+    parser.add_argument(
+        "--tag",
+        default="",
+        help="read results_<tag>.jsonl, write judgments_<tag>.jsonl, skip metrics file",
+    )
     main(parser.parse_args().tag)

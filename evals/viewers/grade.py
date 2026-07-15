@@ -61,8 +61,8 @@ function tally() {
     else counts.ungraded++;
   });
   document.getElementById('tally').textContent =
-    `✅ ${counts.correct}   \U0001F7E1 ${counts.partial}   ❌ ${counts.wrong}` +
-    `   \U0001F47B ${counts.hallucinated}   ·   ${counts.ungraded}/${cards.length} ungraded`;
+    `✅ ${counts.correct}   \U0001f7e1 ${counts.partial}   ❌ ${counts.wrong}` +
+    `   \U0001f47b ${counts.hallucinated}   ·   ${counts.ungraded}/${cards.length} ungraded`;
   localStorage.setItem('rag_grades', JSON.stringify(state));
 }
 function restore() {
@@ -104,13 +104,13 @@ def render_card(row: dict, hits: list[dict]) -> str:
     return f"""
 <section class="card">
   <div class="qhead">
-    <h2>Q{row['id']} <span class="cat">{row['category']}</span></h2>
+    <h2>Q{row["id"]} <span class="cat">{row["category"]}</span></h2>
     <div class="grades">{radios}</div>
   </div>
-  <p class="question">{html.escape(row['question'])}</p>
+  <p class="question">{html.escape(row["question"])}</p>
   <div class="cols">
-    <div class="col rag"><h3>RAG answer</h3><div>{br(row['draft_answer'])}</div></div>
-    <div class="col ideal"><h3>Ideal answer (draft — adjust)</h3><div>{br(row['ideal_answer'])}</div></div>
+    <div class="col rag"><h3>RAG answer</h3><div>{br(row["draft_answer"])}</div></div>
+    <div class="col ideal"><h3>Ideal answer (draft — adjust)</h3><div>{br(row["ideal_answer"])}</div></div>
   </div>
   <details><summary>Retrieved chunks (top {len(hits)})</summary>{render_chunks(hits)}</details>
 </section>"""

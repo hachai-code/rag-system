@@ -14,13 +14,12 @@ Run: uv run python -m evals.search.compare_retrieval
 import json
 from pathlib import Path
 
+from evals.search.metrics import gold_ids
 from rag import keyword_search, search
 from rag.db import connect
 
-from evals.search.metrics import gold_ids
-
-K = 10        # retrieve this deep so a poor rank is still visible (eval scores @5)
-N_HARD = 10   # how many least-confident-for-vector queries to inspect
+K = 10  # retrieve this deep so a poor rank is still visible (eval scores @5)
+N_HARD = 10  # how many least-confident-for-vector queries to inspect
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 
 
@@ -62,8 +61,10 @@ def main() -> None:
                 f"{fmt(v_rank):>4} {fmt(k_rank):>4}  {r['question'][:60]}"
             )
 
-    print(f"\nOn these {len(hard)} hardest-for-vector queries, keyword found a gold "
-          f"chunk that vector missed on {kw_only}.")
+    print(
+        f"\nOn these {len(hard)} hardest-for-vector queries, keyword found a gold "
+        f"chunk that vector missed on {kw_only}."
+    )
     print("vec/kw = rank of first gold chunk in each method's top 10 ('miss' = not in top 10).")
 
 

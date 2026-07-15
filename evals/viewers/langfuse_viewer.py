@@ -70,14 +70,30 @@ def pull() -> None:
         for t in traces:
             retrieved = (t.metadata or {}).get("retrieved", [])
             content = chunk_rows(conn, [r["id"] for r in retrieved])
-            chunks = [{"title": r["title"],
-                       "source": content.get(r["id"], {}).get("source", ""),
-                       "distance": r["distance"],
-                       "content": content.get(r["id"], {}).get("content", "(chunk no longer in corpus)")}
-                      for r in retrieved]
-            out.write(json.dumps({"id": t.id, "question": t.input or "",
-                                  "chunks": chunks, "answer": t.output or "", "note": ""},
-                                 ensure_ascii=False) + "\n")
+            chunks = [
+                {
+                    "title": r["title"],
+                    "source": content.get(r["id"], {}).get("source", ""),
+                    "distance": r["distance"],
+                    "content": content.get(r["id"], {}).get(
+                        "content", "(chunk no longer in corpus)"
+                    ),
+                }
+                for r in retrieved
+            ]
+            out.write(
+                json.dumps(
+                    {
+                        "id": t.id,
+                        "question": t.input or "",
+                        "chunks": chunks,
+                        "answer": t.output or "",
+                        "note": "",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             out.flush()
             print(f"  pulled {t.id[:8]}…  {len(chunks)} chunks  {str(t.input)[:50]}")
     print(f"{TRACES}: {len(load(TRACES))} traces")

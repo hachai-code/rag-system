@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from ..config import CONFIG
 from .ingest import CORPUS_ROOT, Document, count_tokens, load_corpus
 
-CHUNK_SIZE = CONFIG.chunk_size          # 256 won the size sweep (see README)
-CHUNK_OVERLAP = CONFIG.chunk_overlap    # tokens carried from the end of one chunk into the next
+CHUNK_SIZE = CONFIG.chunk_size  # 256 won the size sweep (see README)
+CHUNK_OVERLAP = CONFIG.chunk_overlap  # tokens carried from the end of one chunk into the next
 
 
 @dataclass
 class Chunk:
-    source: str          # document path; ties back to documents.source
+    source: str  # document path; ties back to documents.source
     chunk_index: int
     content: str
     n_tokens: int
@@ -84,16 +84,18 @@ def chunk_document(
     A unit is (text, n_tokens, start, end, speaker): a timed utterance for
     transcripts, a text line (start/end/speaker = None) otherwise."""
     if doc.segments is not None:
-        units = [(s.text, count_tokens(s.text), s.start, s.end, s.speaker)
-                 for s in doc.segments]
+        units = [(s.text, count_tokens(s.text), s.start, s.end, s.speaker) for s in doc.segments]
     else:
-        units = [(line, count_tokens(line), None, None, None)
-                 for line in doc.text.split("\n") if line.strip()]
+        units = [
+            (line, count_tokens(line), None, None, None)
+            for line in doc.text.split("\n")
+            if line.strip()
+        ]
 
     chunks: list[Chunk] = []
     current: list[tuple] = []  # units in the chunk so far
     current_tokens = 0
-    heading: str | None = None        # most recent heading seen
+    heading: str | None = None  # most recent heading seen
     chunk_heading: str | None = None  # heading in effect when this chunk began
 
     def flush() -> None:
@@ -154,7 +156,9 @@ def print_stats(chunks: list[Chunk]) -> None:
     print("CHUNK STATS")
     print("=" * 70)
     print(f"Chunks:          {n}")
-    print(f"Tokens/chunk:    min {token_counts[0]}  median {token_counts[n // 2]}  max {token_counts[-1]}")
+    print(
+        f"Tokens/chunk:    min {token_counts[0]}  median {token_counts[n // 2]}  max {token_counts[-1]}"
+    )
     print(f"With a heading:  {sum(c.heading is not None for c in chunks)}")
 
     print("\nChunks per document")
@@ -171,8 +175,10 @@ def print_samples(chunks: list[Chunk], count: int = 20) -> None:
     print(f"{count} SAMPLE CHUNKS (every {step}th)")
     print("=" * 70)
     for c in chunks[::step][:count]:
-        print(f"\n[{c.section} / {c.title} #{c.chunk_index}]  {c.n_tokens} tokens"
-              f"  heading={c.heading!r}")
+        print(
+            f"\n[{c.section} / {c.title} #{c.chunk_index}]  {c.n_tokens} tokens"
+            f"  heading={c.heading!r}"
+        )
         print("-" * 70)
         if len(c.content) <= 700:
             print(c.content)

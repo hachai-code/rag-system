@@ -29,12 +29,12 @@ from langchain_openai import ChatOpenAI
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from langfuse.openai import OpenAI
-from pydantic import BaseModel, Field
-from langgraph.types import Command
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.store.postgres import PostgresStore
+from langgraph.types import Command
 from psycopg.rows import dict_row
+from pydantic import BaseModel, Field
 
 from ..clients import OPENROUTER_BASE_URL
 from ..config import CONFIG
@@ -45,7 +45,11 @@ from .web_search_agent import (
     _cited_urls,
     _distill,
     _encoder,
+)
+from .web_search_agent import (
     fetch_page as _fetch_page,
+)
+from .web_search_agent import (
     search_web as _search_web,
 )
 
@@ -93,15 +97,16 @@ or errors, move on — do not retry variants of the same URL."""
 # it via a tool call (universally supported) rather than native json-schema, which
 # some OpenRouter upstream providers reject.
 class DeepAnswer(BaseModel):
-    answer: str = Field(description="The complete answer, in full, with corpus [n] and web citations.")
+    answer: str = Field(
+        description="The complete answer, in full, with corpus [n] and web citations."
+    )
+
 
 # Route only to OpenRouter providers that support every parameter in our request
 # (tool calling + structured output). Without this, when the preferred providers
 # are rate-limited OpenRouter falls back to one that rejects the tool-heavy agent
 # request with a 400 "invalid request params".
-_OPENROUTER_PROVIDER = {
-    "provider": {"require_parameters": True, "ignore": ["atlas-cloud"]}
-}
+_OPENROUTER_PROVIDER = {"provider": {"require_parameters": True, "ignore": ["atlas-cloud"]}}
 
 # stream_usage=True so token usage rides the final streaming chunk (OpenRouter always
 # returns it there) — otherwise the streamed run reports zero tokens to Langfuse.
@@ -157,8 +162,12 @@ def format_hits_for_deepagent(hits: list[dict], registry: dict | None = None) ->
     for hit in hits:
         entry = registry.get(hit["id"])
         if entry is None:
-            entry = {"n": len(registry) + 1, "chunk_id": hit["id"],
-                     "title": hit["title"], "source": hit["source"]}
+            entry = {
+                "n": len(registry) + 1,
+                "chunk_id": hit["id"],
+                "title": hit["title"],
+                "source": hit["source"],
+            }
             registry[hit["id"]] = entry
         blocks.append(f"[{entry['n']}] {hit['title']} ({hit['source']})\n{hit['content']}")
     return "\n\n".join(blocks)
@@ -248,9 +257,7 @@ research_subagent = {
 # compiled once at import, so PostgresSaver.from_conn_string (a context manager
 # that closes on exit) won't do — we open the connection ourselves and keep it.
 # autocommit + prepare_threshold=0 + dict_row mirror what from_conn_string sets.
-_conn = psycopg.connect(
-    DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
-)
+_conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
 # Allowlist DeepAnswer so the checkpointed structured_response stays deserializable
 # even under LANGGRAPH_STRICT_MSGPACK — otherwise resuming a thread would break.
 _serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "DeepAnswer")])
@@ -261,9 +268,7 @@ _checkpointer.setup()  # idempotent: creates checkpoint tables on first run
 # state. Its own connection (not _conn): saver and store each serialize access
 # behind their own lock, so sharing one connection across concurrent checkpoint
 # writes and store reads isn't safe.
-_store_conn = psycopg.connect(
-    DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row
-)
+_store_conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
 
 
 # PostgresStore calls embed_documents for BOTH put and search (there is no
@@ -289,6 +294,7 @@ _store.setup()
 
 _QA_NS = ("qa",)  # semantic Q&A cache — one shared namespace for the whole deployment
 
+
 # DeepSeek flash can get stuck re-submitting an unchanged, fully-completed todo
 # list instead of calling the DeepAnswer tool — and deepagents runs with
 # recursion_limit=9999, so the loop burns thousands of calls before LangGraph
@@ -297,11 +303,12 @@ _QA_NS = ("qa",)  # semantic Q&A cache — one shared namespace for the whole de
 class _TodoLoopBreaker(AgentMiddleware):
     def wrap_tool_call(self, request, handler):
         call = request.tool_call
-        if (call["name"] == "write_todos"
-                and call["args"].get("todos") == request.state.get("todos")):
+        if call["name"] == "write_todos" and call["args"].get("todos") == request.state.get(
+            "todos"
+        ):
             return ToolMessage(
                 content="Todo list unchanged — stop planning. Deliver the complete "
-                        "final answer now by calling the DeepAnswer tool.",
+                "final answer now by calling the DeepAnswer tool.",
                 tool_call_id=call["id"],
             )
         return handler(request)
@@ -340,9 +347,11 @@ class _QaInjector(AgentMiddleware):
         info = request.runtime.execution_info
         block = _qa_blocks.get(info.thread_id, "") if info else ""
         if block:
-            request = request.override(system_message=SystemMessage(
-                f"{request.system_prompt}\n\n## Similar past Q&As\n{block}"
-            ))
+            request = request.override(
+                system_message=SystemMessage(
+                    f"{request.system_prompt}\n\n## Similar past Q&As\n{block}"
+                )
+            )
         return handler(request)
 
 
@@ -350,9 +359,7 @@ class _QaInjector(AgentMiddleware):
 # to pause before external research we gate on `task` (not the subagent's name).
 # Opt-in via config: the UI has no approval button yet, so defaulting HITL on would
 # strand the streaming happy path at the interrupt.
-_interrupt_on = (
-    {"task": {"allowed_decisions": ["approve", "reject"]}} if ENABLE_HITL else None
-)
+_interrupt_on = {"task": {"allowed_decisions": ["approve", "reject"]}} if ENABLE_HITL else None
 
 AGENT = create_deep_agent(
     model=model,
@@ -391,17 +398,22 @@ def _save_qa_record(thread_id: str, question: str, answer: str, values: dict) ->
     if answer == _NO_ANSWER or _qa_top_score.get(thread_id, 0.0) >= _QA_DEDUP_SCORE:
         return
     files = values.get("files") or {}
-    _store.put(_QA_NS, uuid4().hex, {
-        "question": question,
-        "answer": answer,
-        "corpus_sources": _cited_corpus_sources(thread_id, answer),
-        "web_urls": sorted(_cited_urls(answer)),
-        # deepagents FileData -> plain text; skip base64 (binary) files
-        "research_files": {
-            path: fd["content"] for path, fd in files.items()
-            if fd.get("encoding", "utf-8") == "utf-8"
+    _store.put(
+        _QA_NS,
+        uuid4().hex,
+        {
+            "question": question,
+            "answer": answer,
+            "corpus_sources": _cited_corpus_sources(thread_id, answer),
+            "web_urls": sorted(_cited_urls(answer)),
+            # deepagents FileData -> plain text; skip base64 (binary) files
+            "research_files": {
+                path: fd["content"]
+                for path, fd in files.items()
+                if fd.get("encoding", "utf-8") == "utf-8"
+            },
         },
-    })
+    )
 
 
 def _pending_tool_calls(interrupts) -> list[dict]:
@@ -414,7 +426,9 @@ def _pending_tool_calls(interrupts) -> list[dict]:
         for action in interrupt.value["action_requests"]:
             args = action.get("args") or {}
             summary = args.get("description") or args.get("query") or ""
-            pending.append({"tool": action["name"], "summary": " ".join(str(summary).split())[:200]})
+            pending.append(
+                {"tool": action["name"], "summary": " ".join(str(summary).split())[:200]}
+            )
     return pending
 
 
@@ -493,7 +507,11 @@ def _step_label(name: str, args: dict) -> str:
         return f"Searching the corpus for “{args.get('query', '')}”"
     if name == "task":
         desc = " ".join(args.get("description", "").split())
-        return f"Delegating research: {desc[:100]}…" if len(desc) > 100 else f"Delegating research: {desc}"
+        return (
+            f"Delegating research: {desc[:100]}…"
+            if len(desc) > 100
+            else f"Delegating research: {desc}"
+        )
     if name == "web_search":
         return f"Web search: “{args.get('query', '')}”"
     if name == "fetch_page":

@@ -26,8 +26,6 @@ import sys
 from pathlib import Path
 
 import instructor
-from openai import OpenAI
-
 from deepeval.metrics import (
     AnswerRelevancyMetric,
     ContextualPrecisionMetric,
@@ -37,6 +35,8 @@ from deepeval.metrics import (
 )
 from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
+from openai import OpenAI
+
 from evals.answer.judge import NO_ANSWER
 from rag import RELEVANCE_THRESHOLD, answer, search
 from rag.db import connect
@@ -143,7 +143,12 @@ def main() -> None:
                 retrieval_context=[h["content"] for h in hits],
             )
             results = {name: score(m, tc) for name, m in mets.items()}
-            row = {"id": item["id"], "question": item["question"], "answer": ans, "metrics": results}
+            row = {
+                "id": item["id"],
+                "question": item["question"],
+                "answer": ans,
+                "metrics": results,
+            }
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
             judged += 1
