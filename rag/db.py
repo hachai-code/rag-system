@@ -8,6 +8,8 @@ from psycopg.rows import dict_row
 
 DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rag")
 
+EMBED_DIM = 1024  # must match the VECTOR(1024) columns in db/migrations/
+
 
 def connect() -> psycopg.Connection:
     """A dict-row connection with pgvector registered — the shape query code expects."""

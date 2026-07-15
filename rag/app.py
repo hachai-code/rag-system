@@ -32,11 +32,10 @@ from .query.retrieve import (
     METHOD,
     PARENT_DOCUMENT,
     QUERY_ENHANCEMENT,
-    RELEVANCE_THRESHOLD,
     RERANK_DEPTH,
     TOP_K,
+    covered,
     retrieve,
-    search,
     source_passage,
 )
 from .query.web_search_graph_agent import stream_agent
@@ -126,11 +125,6 @@ class SourcePassage(BaseModel):
     after: str  # context following the cited chunk
 
 
-def _no_relevant_hits(hits: list[dict]) -> bool:
-    """True when retrieval found nothing close enough to answer from."""
-    return not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD
-
-
 def _retrieved_meta(hits: list[dict]) -> list[dict]:
     """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
@@ -155,8 +149,8 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             span.update(output=BLOCKED)
             return AskResponse(answer=BLOCKED, citations=[], sources=[])
         with connect() as conn:
-            gate = search(conn, body.question, k=1)  # cheap coverage check only
-            if _no_relevant_hits(gate):
+            ok, gate = covered(conn, body.question)
+            if not ok:
                 span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                 return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
             hits = retrieve(
@@ -200,8 +194,8 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                 yield f"data: {json.dumps({'type': 'text', 'text': BLOCKED})}\n\n"
                 return
             with connect() as conn:
-                gate = search(conn, body.question, k=1)  # cheap coverage check only
-                if _no_relevant_hits(gate):
+                ok, gate = covered(conn, body.question)
+                if not ok:
                     span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
                     yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
                     return

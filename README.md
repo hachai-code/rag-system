@@ -31,7 +31,7 @@ frontend/            Next.js UI
 docker compose up -d                     # Postgres + pgvector (empty)
 cp .env.example .env                      # then fill in the API keys
 uv sync
-uv run python db/migrate.py               # apply pending schema migrations
+uv run python -m db.migrate               # apply pending schema migrations
 
 uv run python -m rag.ocr                  # optional: OCR the image-only slide PDFs first
 uv run python -m rag.pipeline             # build the index (ingest -> chunk -> embed -> store)

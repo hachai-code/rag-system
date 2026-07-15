@@ -19,16 +19,17 @@ import argparse
 import hashlib
 import json
 import time
-from collections import defaultdict
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
 from evals.answer.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
 from evals.answer.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
-from rag import answer, retrieve, search
+from evals.schema import pass_rate
+from rag import answer, retrieve
 from rag.db import connect
 from rag.query.answer import ANSWER_FORMAT, SYSTEM_PROMPT
+from rag.query.retrieve import covered
 
 
 def sha(text: str) -> str:
@@ -107,8 +108,8 @@ def evaluate(
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
     for item in items:
         try:
-            gate = search(conn, item["question"], k=1)  # cheap coverage check only
-            if not gate or gate[0]["distance"] > threshold:
+            ok, _ = covered(conn, item["question"], threshold)
+            if not ok:
                 ans = NO_ANSWER
             else:
                 hits = retrieve(
@@ -157,13 +158,9 @@ def run_summary(conn, run_id) -> dict:
     rows = conn.execute(
         "SELECT scores, cost, latency_ms FROM eval_results WHERE run_id = %s", (run_id,)
     ).fetchall()
-    per_dim = defaultdict(list)
-    for r in rows:
-        for dim, passed in r["scores"].items():
-            per_dim[dim].append(passed)
     return {
         "n": len(rows),
-        "pass_rate": {dim: sum(v) / len(v) for dim, v in per_dim.items()},
+        "pass_rate": pass_rate(rows),
         "cost": float(sum(r["cost"] for r in rows)),
         "latency": sum(r["latency_ms"] for r in rows) / len(rows) if rows else 0.0,
     }

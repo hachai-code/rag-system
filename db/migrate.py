@@ -2,7 +2,7 @@
 
 Run once after `docker compose up -d`, and again whenever new migrations land:
 
-    uv run python db/migrate.py
+    uv run python -m db.migrate
 
 Each db/migrations/NNNN_*.sql file is applied once, in filename order, inside its own
 transaction, and recorded in schema_migrations so re-runs are no-ops. Migrations use
@@ -10,12 +10,12 @@ CREATE ... IF NOT EXISTS, so a DB provisioned before this system existed catches
 cleanly. To add a change: drop a new higher-numbered .sql file in db/migrations/.
 """
 
-import os
 from pathlib import Path
 
 import psycopg
 
-DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rag")
+from rag.db import DB_URL
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 

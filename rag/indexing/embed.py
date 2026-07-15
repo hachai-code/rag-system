@@ -14,12 +14,12 @@ from ai_utils import UsageTracker
 from psycopg.types.json import Jsonb
 
 from ..config import CONFIG
+from ..db import EMBED_DIM
 from ..query.answer import complete
 from .chunk import Chunk
 from .ingest import Document
 
 VOYAGE_MODEL = CONFIG.voyage_model
-EMBED_DIM = 1024  # must match the VECTOR(1024) column in db/migrations/
 BATCH_SIZE = 128  # texts per request; limits are 1000 texts / 320K tokens
 
 # HyPE: cheap model that writes the hypothetical questions, and how many per chunk.

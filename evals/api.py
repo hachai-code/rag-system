@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from evals.schema import pass_rate
 from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent / "answer" / "data" / "rag_system_human_eval.jsonl"
@@ -77,14 +78,6 @@ def _split_map() -> dict[int, str]:
     return {row["id"]: row["split"] for row in map(json.loads, EVAL_FILE.read_text().splitlines())}
 
 
-def _pass_rate(rows: list[dict]) -> dict[str, float]:
-    per_dim = defaultdict(list)
-    for r in rows:
-        for dim, passed in r["scores"].items():
-            per_dim[dim].append(passed)
-    return {dim: sum(v) / len(v) for dim, v in sorted(per_dim.items())}
-
-
 @router.get("/evals/summary")
 def evals_summary() -> EvalsSummary:
     with connect() as conn:
@@ -120,7 +113,7 @@ def evals_summary() -> EvalsSummary:
             config_name=rs[0]["config_name"],
             config_hash=rs[0]["config_hash"],
             n=len(rs),
-            pass_rate=_pass_rate(rs),
+            pass_rate=pass_rate(rs),
             cost=float(sum(r["cost"] for r in rs)),
             latency_ms=sum(r["latency_ms"] for r in rs) / len(rs),
         )
@@ -150,7 +143,7 @@ def evals_summary() -> EvalsSummary:
                     SplitSummary(
                         run_id=rs[0]["run_id"],
                         n=len(in_split),
-                        pass_rate=_pass_rate(in_split),
+                        pass_rate=pass_rate(in_split),
                     ),
                 )
                 break

@@ -11,11 +11,10 @@ import psycopg
 
 from ..clients import voyage_client
 from ..config import CONFIG
-from ..db import connect
+from ..db import EMBED_DIM, connect
 from .answer import complete
 
 VOYAGE_MODEL = CONFIG.voyage_model
-EMBED_DIM = 1024
 TOP_K = CONFIG.top_k
 METHOD = CONFIG.method  # production default retriever (vector | hybrid | rerank)
 
@@ -69,6 +68,22 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
         """,
         {"emb": embedding, "k": k},
     ).fetchall()
+
+
+def no_relevant_hits(hits: list[dict], threshold: float = RELEVANCE_THRESHOLD) -> bool:
+    """True when retrieval found nothing close enough to answer from."""
+    return not hits or hits[0]["distance"] > threshold
+
+
+def covered(
+    conn: psycopg.Connection, question: str, threshold: float = RELEVANCE_THRESHOLD
+) -> tuple[bool, list[dict]]:
+    """Cheap coverage gate shared by the API and the eval runner: probe with k=1 and
+    apply the relevance threshold. Also returns the probe hits so callers can log
+    what the gate saw. Keeping prod and eval on this one function means the gate
+    can't drift between them."""
+    gate = search(conn, question, k=1)
+    return not no_relevant_hits(gate, threshold), gate
 
 
 def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:

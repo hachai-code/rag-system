@@ -3,9 +3,11 @@
 Same behavior, budgets, and Langfuse trace shape — but the hand-written while
 loop is a StateGraph: call_model → run_tools (tool calls) or review (draft
 answer), with every path checked against the budgets and diverted to
-best_effort when one is exhausted. Shares prompts, tools, and helpers with the
-old module during the A/B period; the old file goes away once the graph wins
-the eval.
+best_effort when one is exhausted. Shares prompts, tools, and helpers with
+web_search_agent.py. Both implementations are kept deliberately: this one
+serves /agent/stream; the loop version stays as the eval baseline
+(evals/web_search/run_baseline.py --impl loop) and the home of the shared
+web tooling.
 """
 
 import operator

@@ -22,7 +22,7 @@ from rag import (
     rrf,
     search,
 )
-from rag.app import AskRequest, _no_relevant_hits
+from rag.app import AskRequest
 from rag.query.answer import _chunk_citations, _citations
 from rag.query.deepagent import _step_label, format_hits_for_deepagent
 from rag.query.retrieve import (
@@ -30,6 +30,7 @@ from rag.query.retrieve import (
     _dedupe_to_parent,
     _parent_range,
     _rerank,
+    no_relevant_hits,
 )
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
@@ -106,9 +107,9 @@ def test_out_of_range_chunk_index_is_dropped():
 def test_no_answer_gate():
     """The gate refuses when nothing was retrieved or the nearest hit is past the
     relevance threshold, and answers otherwise."""
-    assert _no_relevant_hits([]) is True
-    assert _no_relevant_hits([{"distance": RELEVANCE_THRESHOLD + 0.01}]) is True
-    assert _no_relevant_hits([{"distance": RELEVANCE_THRESHOLD - 0.01}]) is False
+    assert no_relevant_hits([]) is True
+    assert no_relevant_hits([{"distance": RELEVANCE_THRESHOLD + 0.01}]) is True
+    assert no_relevant_hits([{"distance": RELEVANCE_THRESHOLD - 0.01}]) is False
 
 
 def test_question_length_is_bounded():

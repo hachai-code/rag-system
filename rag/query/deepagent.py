@@ -39,8 +39,8 @@ from pydantic import BaseModel, Field
 
 from ..clients import OPENROUTER_BASE_URL, voyage_client
 from ..config import CONFIG
-from ..db import DB_URL, connect
-from .retrieve import EMBED_DIM, VOYAGE_MODEL, retrieve
+from ..db import DB_URL, EMBED_DIM, connect
+from .retrieve import VOYAGE_MODEL, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,
     _cited_urls,
