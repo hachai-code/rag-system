@@ -1,8 +1,10 @@
 # rag-system Improvement Plan
 
-> **Status (2026-07-15):** Phases 0–7 complete. Phase 7 needed no code change —
+> **Status (2026-07-15): all phases complete.** Phase 7 needed no code change —
 > env access already followed the convention; the drip rule is codified in
-> AGENTS.md. Remaining: Phase 8 (reusable clean-code skill).
+> AGENTS.md. Phase 8's skill is deployed at
+> `~/.claude/skills/cleaning-up-codebases/SKILL.md` (baseline-vs-skill tested
+> on a seeded fixture per the writing-skills TDD method).
 
 ## Context
 
