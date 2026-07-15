@@ -6,8 +6,8 @@ it decides when to search the corpus (via the retrieve_corpus tool) and answers
 from what it finds, using Deep Agents' built-in planning and virtual filesystem.
 It then delegates each substantive point to a context-isolated external-research
 subagent, so raw web crawl transcripts stay out of the main thread. The compiled
-agent is built once at module load (like GRAPH in web_search_graph_agent.py) and
-invoked per request inside a Langfuse span.
+agent is built once on first request and cached (importing this module needs no
+Postgres or API keys) and invoked per request inside a Langfuse span.
 
 Model wiring: the deep agent needs a LangChain chat model. We reach DeepSeek
 through OpenRouter (the same seam generation uses) via ChatOpenAI, reusing the
@@ -15,6 +15,7 @@ existing OPENROUTER_API_KEY rather than a separate DEEPSEEK_API_KEY.
 """
 
 import re
+from functools import lru_cache
 from os import environ
 from uuid import uuid4
 
@@ -36,10 +37,10 @@ from langgraph.types import Command
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from ..clients import OPENROUTER_BASE_URL
+from ..clients import OPENROUTER_BASE_URL, voyage_client
 from ..config import CONFIG
 from ..db import DB_URL, connect
-from .retrieve import EMBED_DIM, VOYAGE_MODEL, _voyage, retrieve
+from .retrieve import EMBED_DIM, VOYAGE_MODEL, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,
     _cited_urls,
@@ -108,34 +109,30 @@ class DeepAnswer(BaseModel):
 # request with a 400 "invalid request params".
 _OPENROUTER_PROVIDER = {"provider": {"require_parameters": True, "ignore": ["atlas-cloud"]}}
 
+
 # stream_usage=True so token usage rides the final streaming chunk (OpenRouter always
 # returns it there) — otherwise the streamed run reports zero tokens to Langfuse.
 # max_retries=6 (over the SDK's default 2) so a transient OpenRouter 5xx on any one of
 # the run's ~100+ calls is retried (exponential backoff) instead of aborting the whole run.
-model = ChatOpenAI(
-    model=AGENT_MODEL,
-    base_url=OPENROUTER_BASE_URL,
-    api_key=environ["OPENROUTER_API_KEY"],
-    temperature=0,
-    extra_body=_OPENROUTER_PROVIDER,
-    stream_usage=True,
-    max_retries=6,
-)
+def _chat_model(model: str) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=model,
+        base_url=OPENROUTER_BASE_URL,
+        api_key=environ["OPENROUTER_API_KEY"],
+        temperature=0,
+        extra_body=_OPENROUTER_PROVIDER,
+        stream_usage=True,
+        max_retries=6,
+    )
 
-research_model = ChatOpenAI(
-    model=RESEARCH_SUBAGENT_MODEL,
-    base_url=OPENROUTER_BASE_URL,
-    api_key=environ["OPENROUTER_API_KEY"],
-    temperature=0,
-    extra_body=_OPENROUTER_PROVIDER,
-    stream_usage=True,
-    max_retries=6,
-)
 
 # Raw Langfuse-traced OpenAI client for _distill (which calls chat.completions
 # directly, not a LangChain model). Distillation itself runs on the cheap flash
 # model wired inside _distill — not the subagent's model.
-_distill_client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=environ["OPENROUTER_API_KEY"])
+@lru_cache(maxsize=1)
+def _distill_client() -> OpenAI:
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=environ["OPENROUTER_API_KEY"])
+
 
 # Per-run registries of corpus passages the agent has retrieved, keyed by thread_id:
 # retrieve_corpus fills one so a passage keeps the same [n] across repeated retrievals
@@ -237,38 +234,8 @@ def fetch_page(url: str, focus: str, config: RunnableConfig) -> str:
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
     if len(_encoder.encode(page)) > DISTILL_OVER_TOKENS:
-        page, _ = _distill(_distill_client, focus, page)
+        page, _ = _distill(_distill_client(), focus, page)
     return page
-
-
-# Context-isolated: its web crawl transcript stays in the subagent thread and
-# only its final findings return to the main agent (via the task tool). Given its
-# own cheaper model through the "model" key, verified against deepagents 0.6.x.
-research_subagent = {
-    "name": "external-research",
-    "description": "Search the web to corroborate or elaborate a single corpus point.",
-    "system_prompt": VALIDATION_PROMPT,
-    "tools": [web_search, fetch_page],
-    "model": research_model,
-}
-
-
-# A single long-lived connection held for the process lifetime: the agent is
-# compiled once at import, so PostgresSaver.from_conn_string (a context manager
-# that closes on exit) won't do — we open the connection ourselves and keep it.
-# autocommit + prepare_threshold=0 + dict_row mirror what from_conn_string sets.
-_conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
-# Allowlist DeepAnswer so the checkpointed structured_response stays deserializable
-# even under LANGGRAPH_STRICT_MSGPACK — otherwise resuming a thread would break.
-_serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "DeepAnswer")])
-_checkpointer = PostgresSaver(_conn, serde=_serde)
-_checkpointer.setup()  # idempotent: creates checkpoint tables on first run
-
-# Long-term memory store: cross-thread data, unlike the checkpointer's per-thread
-# state. Its own connection (not _conn): saver and store each serialize access
-# behind their own lock, so sharing one connection across concurrent checkpoint
-# writes and store reads isn't safe.
-_store_conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
 
 
 # PostgresStore calls embed_documents for BOTH put and search (there is no
@@ -276,21 +243,33 @@ _store_conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_
 # everywhere keeps stored questions and search queries in one consistent space —
 # Voyage's query/document asymmetric tuning isn't reachable through this store.
 def _embed_for_store(texts) -> list[list[float]]:
-    return _voyage.embed(
-        list(texts), model=VOYAGE_MODEL, input_type="document", output_dimension=EMBED_DIM
-    ).embeddings
+    return (
+        voyage_client()
+        .embed(list(texts), model=VOYAGE_MODEL, input_type="document", output_dimension=EMBED_DIM)
+        .embeddings
+    )
 
 
-# Semantic index over the "question" field of qa records (score = cosine similarity,
-# higher is better). setup() is idempotent per migration: the base store table is
-# untouched; the index config adds the vector migrations (pgvector extension check,
-# store_vectors table, HNSW index — CREATE INDEX CONCURRENTLY needs the autocommit
-# connection above).
-_store = PostgresStore(
-    _store_conn,
-    index={"dims": EMBED_DIM, "embed": _embed_for_store, "fields": ["question"]},
-)
-_store.setup()
+@lru_cache(maxsize=1)
+def _qa_store() -> PostgresStore:
+    """Long-term memory store: cross-thread data, unlike the checkpointer's per-thread
+    state. Built on first use over its own long-lived connection (not the checkpointer's):
+    saver and store each serialize access behind their own lock, so sharing one connection
+    across concurrent checkpoint writes and store reads isn't safe.
+
+    Semantic index over the "question" field of qa records (score = cosine similarity,
+    higher is better). setup() is idempotent per migration: the base store table is
+    untouched; the index config adds the vector migrations (pgvector extension check,
+    store_vectors table, HNSW index — CREATE INDEX CONCURRENTLY needs the autocommit
+    connection)."""
+    conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
+    store = PostgresStore(
+        conn,
+        index={"dims": EMBED_DIM, "embed": _embed_for_store, "fields": ["question"]},
+    )
+    store.setup()
+    return store
+
 
 _QA_NS = ("qa",)  # semantic Q&A cache — one shared namespace for the whole deployment
 
@@ -327,7 +306,7 @@ _QA_DEDUP_SCORE = 0.9  # ponytail: fixed threshold, tune if dupes or collisions 
 def _lookup_similar_qa(question: str) -> tuple[str, float]:
     """(formatted top-3 similar past Q&As, top similarity score) — ("", 0.0) when
     the cache has nothing."""
-    hits = _store.search(_QA_NS, query=question, limit=3)
+    hits = _qa_store().search(_QA_NS, query=question, limit=3)
     block = "\n\n".join(
         f"### Past Q (similarity {h.score:.2f}): {h.value['question']}\n"
         f"{h.value['answer'][:_QA_ANSWER_CHARS]}\n"
@@ -361,17 +340,44 @@ class _QaInjector(AgentMiddleware):
 # strand the streaming happy path at the interrupt.
 _interrupt_on = {"task": {"allowed_decisions": ["approve", "reject"]}} if ENABLE_HITL else None
 
-AGENT = create_deep_agent(
-    model=model,
-    tools=[retrieve_corpus],
-    system_prompt=AGENT_PROMPT,
-    subagents=[research_subagent],
-    checkpointer=_checkpointer,
-    response_format=ToolStrategy(DeepAnswer),
-    interrupt_on=_interrupt_on,
-    middleware=[_TodoLoopBreaker(), _QaInjector()],
-    store=_store,
-)
+
+@lru_cache(maxsize=1)
+def _agent():
+    """Compile the deep agent on first use and cache it for the process lifetime.
+
+    The checkpointer needs a long-lived connection: PostgresSaver.from_conn_string
+    (a context manager that closes on exit) won't do — we open the connection
+    ourselves and keep it. autocommit + prepare_threshold=0 + dict_row mirror what
+    from_conn_string sets."""
+    conn = psycopg.connect(DB_URL, autocommit=True, prepare_threshold=0, row_factory=dict_row)
+    # Allowlist DeepAnswer so the checkpointed structured_response stays deserializable
+    # even under LANGGRAPH_STRICT_MSGPACK — otherwise resuming a thread would break.
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[("rag.query.deepagent", "DeepAnswer")])
+    checkpointer = PostgresSaver(conn, serde=serde)
+    checkpointer.setup()  # idempotent: creates checkpoint tables on first run
+
+    # Context-isolated: its web crawl transcript stays in the subagent thread and
+    # only its final findings return to the main agent (via the task tool). Given its
+    # own cheaper model through the "model" key, verified against deepagents 0.6.x.
+    research_subagent = {
+        "name": "external-research",
+        "description": "Search the web to corroborate or elaborate a single corpus point.",
+        "system_prompt": VALIDATION_PROMPT,
+        "tools": [web_search, fetch_page],
+        "model": _chat_model(RESEARCH_SUBAGENT_MODEL),
+    }
+
+    return create_deep_agent(
+        model=_chat_model(AGENT_MODEL),
+        tools=[retrieve_corpus],
+        system_prompt=AGENT_PROMPT,
+        subagents=[research_subagent],
+        checkpointer=checkpointer,
+        response_format=ToolStrategy(DeepAnswer),
+        interrupt_on=_interrupt_on,
+        middleware=[_TodoLoopBreaker(), _QaInjector()],
+        store=_qa_store(),
+    )
 
 
 _NO_ANSWER = "The agent finished without producing an answer."
@@ -398,7 +404,7 @@ def _save_qa_record(thread_id: str, question: str, answer: str, values: dict) ->
     if answer == _NO_ANSWER or _qa_top_score.get(thread_id, 0.0) >= _QA_DEDUP_SCORE:
         return
     files = values.get("files") or {}
-    _store.put(
+    _qa_store().put(
         _QA_NS,
         uuid4().hex,
         {
@@ -451,7 +457,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
             # The handler must be built inside the active span so the LangGraph run nests
             # under it — a module-level handler binds to the trace root instead.
             config["callbacks"] = [CallbackHandler()]
-            result = AGENT.invoke({"messages": [{"role": "user", "content": question}]}, config)
+            result = _agent().invoke({"messages": [{"role": "user", "content": question}]}, config)
             if result.get("__interrupt__"):
                 pending = _pending_tool_calls(result["__interrupt__"])
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
@@ -476,14 +482,14 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     runs are not written to the Q&A cache — the original question isn't in scope here."""
     config = {"configurable": {"thread_id": thread_id}}
     _web_calls[thread_id] = 0
-    pending = _pending_tool_calls(AGENT.get_state(config).interrupts)
+    pending = _pending_tool_calls(_agent().get_state(config).interrupts)
     decisions = [{"type": decision} for _ in pending]
     try:
         with get_client().start_as_current_observation(
             as_type="span", name="rag-agent-resume", input=decision
         ) as span:
             config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
-            result = AGENT.invoke(Command(resume={"decisions": decisions}), config)
+            result = _agent().invoke(Command(resume={"decisions": decisions}), config)
             if result.get("__interrupt__"):
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
                 return {
@@ -553,7 +559,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
     ) as span:
         config["callbacks"] = [CallbackHandler()]  # inside the span so the run nests under it
         try:
-            for namespace, update in AGENT.stream(
+            for namespace, update in _agent().stream(
                 {"messages": [{"role": "user", "content": question}]},
                 config,
                 stream_mode="updates",
@@ -581,7 +587,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
                             }
             # The run either finished or paused at the HITL gate; the stream ends
             # either way, so read the terminal state and emit the matching event.
-            state = AGENT.get_state(config)
+            state = _agent().get_state(config)
             if state.interrupts:
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
                 yield {

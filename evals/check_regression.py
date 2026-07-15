@@ -25,8 +25,8 @@ from pathlib import Path
 from evals.answer.judge import eval_items
 from evals.answer.judge_db import judge_client
 from evals.run import evaluate, load_config
-from rag import ANSWER_FORMAT
 from rag.db import connect
+from rag.query.answer import ANSWER_FORMAT
 
 BASELINE = Path(__file__).parent / "baseline_metrics.json"
 THRESHOLD = 0.15

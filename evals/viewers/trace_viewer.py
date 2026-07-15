@@ -27,8 +27,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from evals.answer.judge import NO_ANSWER
-from rag import RELEVANCE_THRESHOLD, answer, search
+from rag import answer, search
 from rag.db import connect
+from rag.query.retrieve import RELEVANCE_THRESHOLD
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"

@@ -15,10 +15,7 @@ from pydantic import ValidationError
 
 from evals.search.metrics import recall_at_k, reciprocal_rank
 from rag import (
-    RELEVANCE_THRESHOLD,
     GroundedAnswer,
-    _chunk_citations,
-    _citations,
     get_retriever,
     hybrid_search,
     rerank_search,
@@ -26,8 +23,14 @@ from rag import (
     search,
 )
 from rag.app import AskRequest, _no_relevant_hits
+from rag.query.answer import _chunk_citations, _citations
 from rag.query.deepagent import _step_label, format_hits_for_deepagent
-from rag.query.retrieve import _dedupe_to_parent, _parent_range, _rerank
+from rag.query.retrieve import (
+    RELEVANCE_THRESHOLD,
+    _dedupe_to_parent,
+    _parent_range,
+    _rerank,
+)
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
 # the citation's document_index, exactly as the live code does.

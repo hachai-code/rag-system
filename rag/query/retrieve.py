@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import psycopg
-import voyageai
 
+from ..clients import voyage_client
 from ..config import CONFIG
 from ..db import connect
 from .answer import complete
@@ -44,14 +44,12 @@ RERANK_DEPTH = CONFIG.rerank_depth
 # Chunks of surrounding context to show on each side of a cited chunk (click-through).
 SOURCE_WINDOW = CONFIG.source_window
 
-_voyage = voyageai.Client(max_retries=2)
-
 
 @lru_cache(maxsize=256)
 def embed_query(question: str) -> list[float]:
     """Embed the question. input_type='query' is the search-side counterpart to the
     stored 'document' embeddings — Voyage tunes the two differently."""
-    result = _voyage.embed(
+    result = voyage_client().embed(
         [question], model=VOYAGE_MODEL, input_type="query", output_dimension=EMBED_DIM
     )
     return result.embeddings[0]
@@ -132,7 +130,7 @@ def _rerank(question: str, candidates: list[dict], k: int) -> list[dict]:
     HyPE question-match path — so all of them score (question, chunk) the same way."""
     if not candidates:
         return []
-    reranked = _voyage.rerank(
+    reranked = voyage_client().rerank(
         question, [c["content"] for c in candidates], model=RERANK_MODEL, top_k=k
     )
     return [candidates[r.index] for r in reranked.results]

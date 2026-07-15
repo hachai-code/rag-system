@@ -38,8 +38,9 @@ from deepeval.test_case import LLMTestCase
 from openai import OpenAI
 
 from evals.answer.judge import NO_ANSWER
-from rag import RELEVANCE_THRESHOLD, answer, search
+from rag import answer, search
 from rag.db import connect
+from rag.query.retrieve import RELEVANCE_THRESHOLD
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "deepeval_results.jsonl"

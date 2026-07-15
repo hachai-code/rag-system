@@ -31,8 +31,9 @@ from evals.answer.judge import (
     judge_client,
     rag_answer,
 )
-from rag import GEN_MODEL, RELEVANCE_THRESHOLD, TOP_K
 from rag.db import connect
+from rag.query.answer import GEN_MODEL
+from rag.query.retrieve import RELEVANCE_THRESHOLD, TOP_K
 
 # Judge token price (DeepSeek V4 Flash on OpenRouter): $0.09 / $0.18 per 1M in/out.
 IN_PRICE, OUT_PRICE = 0.09 / 1_000_000, 0.18 / 1_000_000

@@ -26,8 +26,9 @@ from psycopg.types.json import Jsonb
 
 from evals.answer.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
 from evals.answer.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
-from rag import ANSWER_FORMAT, SYSTEM_PROMPT, answer, retrieve, search
+from rag import answer, retrieve, search
 from rag.db import connect
+from rag.query.answer import ANSWER_FORMAT, SYSTEM_PROMPT
 
 
 def sha(text: str) -> str:

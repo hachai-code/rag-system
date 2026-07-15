@@ -29,9 +29,11 @@ import instructor
 import psycopg
 from pydantic import BaseModel, Field
 
-from rag import OPENROUTER_BASE_URL, RELEVANCE_THRESHOLD, answer, search
+from rag import answer, search
+from rag.clients import OPENROUTER_BASE_URL
 from rag.config import CONFIG
 from rag.db import connect
+from rag.query.retrieve import RELEVANCE_THRESHOLD
 
 EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
