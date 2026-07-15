@@ -59,7 +59,8 @@ export default function Home() {
   // notebook the deep agent builds up (multi-turn continuity).
   const [threadId] = useState(() => crypto.randomUUID());
   // The deep agent's stored long-term memories, listed in the sidebar.
-  const [memories, setMemories] = useState<QAMemory[]>([]);
+  // null = still fetching (sidebar shows a loader instead of the empty state).
+  const [memories, setMemories] = useState<QAMemory[] | null>(null);
   const [memoryKey, setMemoryKey] = useState<string | null>(null);
   const [memory, setMemory] = useState<QAMemoryDetail | null>(null);
 

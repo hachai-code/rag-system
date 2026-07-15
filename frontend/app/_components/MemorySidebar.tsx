@@ -8,7 +8,7 @@ export function MemorySidebar({
   selectedKey,
   onSelect,
 }: {
-  memories: QAMemory[];
+  memories: QAMemory[] | null; // null = still fetching
   selectedKey: string | null;
   onSelect: (key: string) => void;
 }) {
@@ -16,11 +16,12 @@ export function MemorySidebar({
     <aside className="hidden w-72 shrink-0 border-r border-gray-200 md:block">
       <div className="sticky top-0 h-screen overflow-y-auto p-4">
         <h2 className="mb-3 text-sm font-medium text-gray-500">Memory</h2>
-        {memories.length === 0 && (
+        {memories === null && <p className="animate-pulse text-sm text-gray-400">Loading…</p>}
+        {memories?.length === 0 && (
           <p className="text-sm text-gray-400">No memories yet — answered questions land here.</p>
         )}
         <div className="space-y-1">
-          {memories.map((m) => (
+          {(memories ?? []).map((m) => (
             <button
               key={m.key}
               onClick={() => onSelect(m.key)}
