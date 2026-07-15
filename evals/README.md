@@ -34,7 +34,6 @@ evals/
     judge_vs_human.py      judge↔human agreement  →  analysis/judge_metrics.json
     gen_eval.py            fill eval_set.jsonl with draft RAG answers for grading
     eval_answers.py        end-to-end answer dataset  →  data/answer_feedback.jsonl
-    deepeval_run.py        off-the-shelf RAG-triad scores (DeepEval)
     rubrics.md             the A–F judge rubric
     data/                  human eval, judgments, answer feedback
     analysis/              failure taxonomies, judge validation write-ups, judge metrics
@@ -54,6 +53,11 @@ evals/
     data/ analysis/        results + judgments per run; metrics per run
 
   notes/                 failure-analysis.md, chunking-experiments.md
+
+  deepeval/              framework port: off-the-shelf RAG-triad scores (DeepEval)
+    run.py                 → data/deepeval_results.jsonl
+  inspect-ai/            framework port: 15-question subset on Inspect AI
+    task.py NOTES.md       run with `inspect eval`; see NOTES.md for the comparison
 ```
 
 ## Running

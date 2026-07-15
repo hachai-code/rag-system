@@ -40,3 +40,6 @@ evals/**/langfuse_traces.jsonl
 
 # deepeval telemetry
 .deepeval/
+
+# Inspect AI run logs (regenerate with: inspect eval evals/inspect-ai/task.py)
+evals/inspect-ai/logs/

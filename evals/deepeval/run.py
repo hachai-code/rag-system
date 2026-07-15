@@ -16,8 +16,8 @@ model-ID table.
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
 
-Run:   uv run python -m evals.answer.deepeval_run [n]      # judge first n items (default all)
-Smoke: uv run python -m evals.answer.deepeval_run smoke    # one fixed case, assert wiring works
+Run:   uv run python -m evals.deepeval.run [n]      # judge first n items (default all)
+Smoke: uv run python -m evals.deepeval.run smoke    # one fixed case, assert wiring works
 """
 
 import json
@@ -129,6 +129,7 @@ def main() -> None:
     mets = metrics(judge)
     done = existing_ids()
 
+    OUT_FILE.parent.mkdir(exist_ok=True)
     with connect() as conn, OUT_FILE.open("a") as out:
         judged = 0
         for item in items:
