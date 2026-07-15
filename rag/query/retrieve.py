@@ -11,7 +11,7 @@ import psycopg
 
 from ..clients import voyage_client
 from ..config import CONFIG
-from ..db import EMBED_DIM, connect
+from ..db import EMBED_DIM, Hit, connect
 from .answer import complete
 
 VOYAGE_MODEL = CONFIG.voyage_model
@@ -54,7 +54,7 @@ def embed_query(question: str) -> list[float]:
     return result.embeddings[0]
 
 
-def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]:
     """Return the k chunks most similar to the question, nearest first."""
     embedding = embed_query(question)
     return conn.execute(
@@ -70,14 +70,14 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict
     ).fetchall()
 
 
-def no_relevant_hits(hits: list[dict], threshold: float = RELEVANCE_THRESHOLD) -> bool:
+def no_relevant_hits(hits: list[Hit], threshold: float = RELEVANCE_THRESHOLD) -> bool:
     """True when retrieval found nothing close enough to answer from."""
     return not hits or hits[0]["distance"] > threshold
 
 
 def covered(
     conn: psycopg.Connection, question: str, threshold: float = RELEVANCE_THRESHOLD
-) -> tuple[bool, list[dict]]:
+) -> tuple[bool, list[Hit]]:
     """Cheap coverage gate shared by the API and the eval runner: probe with k=1 and
     apply the relevance threshold. Also returns the probe hits so callers can log
     what the gate saw. Keeping prod and eval on this one function means the gate
@@ -86,7 +86,7 @@ def covered(
     return not no_relevant_hits(gate, threshold), gate
 
 
-def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]:
     """Return the k chunks whose text best matches the question's keywords, via
     Postgres full-text search.
 
@@ -111,14 +111,14 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
     ).fetchall()
 
 
-def rrf(ranked_lists: list[tuple[float, list[dict]]], k: int = RRF_K) -> list[dict]:
+def rrf(ranked_lists: list[tuple[float, list[Hit]]], k: int = RRF_K) -> list[Hit]:
     """Weighted Reciprocal Rank Fusion: merge several ranked hit lists into one.
 
     Each chunk scores sum(weight / (k + rank)) over the lists it appears in — fusing on
     rank (not score) is what lets it blend cosine distance, ts_rank, and multiple query
     phrasings. Returns all fused hits, best first; callers slice to their top_k."""
     scores: dict[int, float] = {}
-    chunks: dict[int, dict] = {}
+    chunks: dict[int, Hit] = {}
     for weight, hits in ranked_lists:
         for rank, hit in enumerate(hits, 1):
             scores[hit["id"]] = scores.get(hit["id"], 0.0) + weight / (k + rank)
@@ -126,7 +126,7 @@ def rrf(ranked_lists: list[tuple[float, list[dict]]], k: int = RRF_K) -> list[di
     return [chunks[cid] for cid in sorted(scores, key=scores.get, reverse=True)]
 
 
-def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]:
     """Fuse vector and keyword rankings with weighted Reciprocal Rank Fusion.
 
     Keyword is down-weighted (README "Retrieval design"); the two retrievers pull
@@ -138,7 +138,7 @@ def hybrid_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> li
     return rrf(ranked_lists)[:k]
 
 
-def _rerank(question: str, candidates: list[dict], k: int) -> list[dict]:
+def _rerank(question: str, candidates: list[Hit], k: int) -> list[Hit]:
     """Cross-encoder rerank a candidate list against the real question, keep k.
 
     Reused by any first stage that wants rerank on top — hybrid (rerank_search) or the
@@ -153,7 +153,7 @@ def _rerank(question: str, candidates: list[dict], k: int) -> list[dict]:
 
 def rerank_search(
     conn: psycopg.Connection, question: str, k: int = TOP_K, retrieve_query: str | None = None
-) -> list[dict]:
+) -> list[Hit]:
     """Hybrid-retrieve RERANK_DEPTH candidates, cross-encoder rerank, keep k.
 
     The reranker reads the (question, chunk) pair together — a sharper signal than the
@@ -176,11 +176,11 @@ def get_retriever(method: str = METHOD):
     return RETRIEVERS[method]
 
 
-def _dedupe_to_parent(hits: list[dict]) -> list[dict]:
+def _dedupe_to_parent(hits: list[Hit]) -> list[Hit]:
     """Collapse question-level matches to their distinct parent chunks, keeping each
     chunk's best (smallest) distance. Several hypothetical questions can point at the
     same chunk; we want one hit per chunk, ordered nearest first."""
-    best: dict[int, dict] = {}
+    best: dict[int, Hit] = {}
     for hit in hits:
         current = best.get(hit["id"])
         if current is None or hit["distance"] < current["distance"]:
@@ -188,7 +188,7 @@ def _dedupe_to_parent(hits: list[dict]) -> list[dict]:
     return sorted(best.values(), key=lambda h: h["distance"])
 
 
-def hype_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[dict]:
+def hype_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]:
     """HyPE: match the query against index-time hypothetical questions, then map each hit
     back to its parent chunk.
 
@@ -252,8 +252,8 @@ def _parent_range(chunk_index: int, window: int) -> tuple[int, int]:
 
 
 def expand_to_parent(
-    conn: psycopg.Connection, hits: list[dict], window: int = SOURCE_WINDOW
-) -> list[dict]:
+    conn: psycopg.Connection, hits: list[Hit], window: int = SOURCE_WINDOW
+) -> list[Hit]:
     """Widen each matched child chunk to its neighbours in the same document.
 
     A 256-token child can match on a phrase whose answer lives in the surrounding
@@ -262,7 +262,7 @@ def expand_to_parent(
     generator sees the parent section. Duplicates are dropped; added neighbours carry no
     retrieval distance."""
     hit_distance = {h["id"]: h.get("distance") for h in hits}
-    expanded: dict[int, dict] = {}
+    expanded: dict[int, Hit] = {}
     for hit in hits:
         target = conn.execute(
             "SELECT document_id, chunk_index FROM chunks WHERE id = %s", (hit["id"],)
@@ -280,14 +280,14 @@ def expand_to_parent(
     return list(expanded.values())
 
 
-def _retrieve_fresh(retriever, question: str, k: int) -> list[dict]:
+def _retrieve_fresh(retriever, question: str, k: int) -> list[Hit]:
     """Run one retrieval on its own connection — multi-query fans out across threads,
     and psycopg connections are not shared between them."""
     with connect() as conn:
         return retriever(conn, question, k)
 
 
-def _multi_query_search(question: str, method: str, k: int) -> list[dict]:
+def _multi_query_search(question: str, method: str, k: int) -> list[Hit]:
     """Retrieve for the question and each paraphrase concurrently, then RRF-fuse."""
     queries = (question,) + multi_query(question)
     retriever = get_retriever(method)
@@ -307,7 +307,7 @@ def retrieve(
     query_enhancement: str | None = QUERY_ENHANCEMENT,
     parent_document: bool = PARENT_DOCUMENT,
     hype: bool = HYPE,
-) -> list[dict]:
+) -> list[Hit]:
     """The retrieval entry point: run `method`, with optional query enhancement and
     parent-document expansion. app.py and the eval runner call this so a config, not a
     code edit, picks the retrieval strategy."""
@@ -348,7 +348,7 @@ def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:
     return 0
 
 
-def _stitch(rows: list[dict], target_index: int) -> tuple[str, str, str]:
+def _stitch(rows: list[Hit], target_index: int) -> tuple[str, str, str]:
     """Join consecutive chunks into (before, chunk, after), dropping overlap.
 
     The target chunk is kept whole so a citation's quote stays findable inside it."""

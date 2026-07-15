@@ -51,7 +51,7 @@ Each phase below is independently shippable. Effort: S = <30 min, M = 1-3 h.
 - **3b (S)** `EMBED_DIM`: define once in `rag/db.py` (it's schema-coupled to `VECTOR(1024)`, not tunable — not config.toml); import in `retrieve.py` and `indexing/embed.py`.
 - **3c (S)** One retrieval-gate helper in `retrieve.py` — `covered(conn, question, threshold) -> tuple[bool, list[dict]]` — used by `app.py:154`, `app.py:193`, `evals/run.py:85`. Keeps prod and eval gates identical by construction.
 - **3d (S)** Extract `_pass_rate(rows)` into `evals/schema.py` (already the shared import-light module); use from `evals/api.py` and `evals/run.py`.
-- **3e (M, biggest win)** Web-search A/B: do NOT refactor both — run the existing `evals/web_search/` eval, pick the winner, delete the loser (−330 to −430 lines). If the graph agent wins: first move shared helpers (`_distill`, `_encoder`, `_cited_urls`, `fetch_page`, `search_web`, budgets) into `rag/query/web_tools.py` with public names (also fixes most cross-module private imports), then delete `web_search_agent.py`.
+- **3e — DECIDED (2026-07-15): keep both agents.** The graph agent serves `/agent/stream`; the loop agent stays as the eval baseline (`run_baseline.py --impl loop`) and home of the shared web tooling. File headers updated to say so. No deletion, no eval run.
 
 ## Phase 4 — Type the hit payload (S/M)
 

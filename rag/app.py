@@ -23,7 +23,7 @@ from slowapi.util import get_remote_address
 
 from evals.api import router as evals_router
 
-from .db import connect
+from .db import Hit, connect
 from .guardrails import BLOCKED, check_input, check_output
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
 from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
@@ -125,7 +125,7 @@ class SourcePassage(BaseModel):
     after: str  # context following the cited chunk
 
 
-def _retrieved_meta(hits: list[dict]) -> list[dict]:
+def _retrieved_meta(hits: list[Hit]) -> list[dict]:
     """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
         {

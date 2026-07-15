@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 
 from ..clients import OPENROUTER_BASE_URL, voyage_client
 from ..config import CONFIG
-from ..db import DB_URL, EMBED_DIM, connect
+from ..db import DB_URL, EMBED_DIM, Hit, connect
 from .retrieve import VOYAGE_MODEL, retrieve
 from .web_search_agent import (
     DISTILL_OVER_TOKENS,
@@ -143,7 +143,7 @@ def _distill_client() -> OpenAI:
 _registries: dict[str, dict] = {}
 
 
-def format_hits_for_deepagent(hits: list[dict], registry: dict | None = None) -> str:
+def format_hits_for_deepagent(hits: list[Hit], registry: dict | None = None) -> str:
     """Render retrieved chunks as numbered, cite-able passages for the deep agent.
 
     Each hit becomes a `[n] Title (source)` header over its text, so the agent can

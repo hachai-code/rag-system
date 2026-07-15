@@ -6,6 +6,7 @@ output). See README "Generation / provider seam".
 """
 
 import os
+from typing import TypedDict
 
 import anthropic
 import instructor
@@ -14,6 +15,19 @@ from pydantic import BaseModel
 
 from ..clients import OPENROUTER_BASE_URL, openrouter_client
 from ..config import CONFIG
+from ..db import Hit
+
+
+class Citation(TypedDict):
+    """One citation record tying a claim back to its chunk — the shape every adapter
+    returns (app.py's Citation response model mirrors it)."""
+
+    claim: str
+    cited_text: str
+    chunk_id: int
+    title: str
+    source: str
+
 
 # Provider seam: which adapter answer() dispatches to and which model it runs, both
 # from config.toml. Prod runs the openai-compat/DeepSeek path (see README).
@@ -58,7 +72,7 @@ def complete(prompt: str, model: str) -> str:
     return resp.choices[0].message.content
 
 
-def context_documents(hits: list[dict]) -> list[dict]:
+def context_documents(hits: list[Hit]) -> list[dict]:
     """Each retrieved chunk as a citable document block. Passing chunks as separate
     documents is what lets the Citations API map `document_index` back to hits[index]."""
     return [
@@ -72,7 +86,7 @@ def context_documents(hits: list[dict]) -> list[dict]:
     ]
 
 
-def _messages(question: str, hits: list[dict]) -> list[dict]:
+def _messages(question: str, hits: list[Hit]) -> list[dict]:
     """The user turn: the retrieved chunks as citable documents, then the question."""
     return [
         {
@@ -83,7 +97,7 @@ def _messages(question: str, hits: list[dict]) -> list[dict]:
     ]
 
 
-def _openai_user_content(question: str, hits: list[dict], numbered: bool = True) -> str:
+def _openai_user_content(question: str, hits: list[Hit], numbered: bool = True) -> str:
     """The OpenAI-compatible user turn: the chunks, then the question.
 
     The claims path numbers each chunk [i] so the model can cite it by index (mapping
@@ -96,7 +110,7 @@ def _openai_user_content(question: str, hits: list[dict], numbered: bool = True)
     return f"{chunks}\n\nQuestion: {question}"
 
 
-def _citations(content: list, hits: list[dict]) -> list[dict]:
+def _citations(content: list, hits: list[Hit]) -> list[Citation]:
     """One record per citation, tying each cited claim back to its chunk.
 
     `cited_text` is extracted by the API from the document, so it can't be a quote the
@@ -114,7 +128,7 @@ def _citations(content: list, hits: list[dict]) -> list[dict]:
     ]
 
 
-def _proof(hits: list[dict]) -> list[dict]:
+def _proof(hits: list[Hit]) -> list[Citation]:
     """The retrieved chunks shown as-is as proof for a prose answer — no claim/span
     mapping. Same dict shape as _citations()/_chunk_citations() so callers (app.py's
     Citation model) don't care which path produced them."""
@@ -131,8 +145,8 @@ def _proof(hits: list[dict]) -> list[dict]:
 
 
 def answer_prose(
-    question: str, hits: list[dict], model: str = GEN_MODEL, system: str = SYSTEM_PROMPT
-) -> tuple[str, list[dict]]:
+    question: str, hits: list[Hit], model: str = GEN_MODEL, system: str = SYSTEM_PROMPT
+) -> tuple[str, list[Citation]]:
     """One synthesized prose answer over the chunks (openai-compat path).
 
     No structured schema — a raw completion is what makes the model write flowing
@@ -163,7 +177,7 @@ class GroundedAnswer(BaseModel):
     claims: list[Claim]
 
 
-def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, list[dict]]:
+def _chunk_citations(grounded: GroundedAnswer, hits: list[Hit]) -> tuple[str, list[Citation]]:
     """Assemble (answer_text, citations) from claims tagged with chunk indices.
 
     Each citation's `cited_text` is the chunk's own content — same dict shape as
@@ -187,12 +201,12 @@ def _chunk_citations(grounded: GroundedAnswer, hits: list[dict]) -> tuple[str, l
 
 def answer(
     question: str,
-    hits: list[dict],
+    hits: list[Hit],
     model: str = GEN_MODEL,
     system: str = SYSTEM_PROMPT,
     provider: str = GEN_PROVIDER,
     fmt: str = ANSWER_FORMAT,
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[Citation]]:
     """Answer over the retrieved chunks and return (answer_text, citations).
 
     Dispatches by `provider` (see README); `fmt` picks prose vs structured claims on
@@ -244,7 +258,7 @@ def answer(
 
 def answer_stream(
     question: str,
-    hits: list[dict],
+    hits: list[Hit],
     model: str = GEN_MODEL,
     provider: str = GEN_PROVIDER,
     fmt: str = ANSWER_FORMAT,
