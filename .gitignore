@@ -35,5 +35,8 @@ evals/**/traces.jsonl
 evals/**/langfuse_traces.jsonl
 
 # Riptide artifacts (cloud-synced)
-.humanlayer/tasks/
+.humanlayer/
 .idea/
+
+# deepeval telemetry
+.deepeval/
