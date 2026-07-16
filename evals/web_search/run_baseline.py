@@ -108,16 +108,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--impl",
-        choices=["loop", "graph"],
-        default="loop",
-        help="agent implementation: hand-written loop or LangGraph",
+        choices=["web_agent"],
+        default="web_agent",
+        help="agent implementation (the consolidated Pydantic AI web agent)",
     )
     args = parser.parse_args()
 
-    if args.impl == "graph":
-        import rag.query.web_search_graph_agent as agent
-    else:
-        import rag.query.web_search_agent as agent
+    import rag.query.agent as agent
     # Baseline runs on the cheap model; recorded in every row.
     agent.MODEL = CONFIG.gen_models["flash"]
     if args.no_critique:

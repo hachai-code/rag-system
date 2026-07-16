@@ -34,7 +34,7 @@ load_dotenv(Path(__file__).parents[2] / ".env")
 
 from rag.clients import openrouter_client
 from rag.config import CONFIG
-from rag.query.web_search_agent import _cited_urls
+from rag.query.tools import _cited_urls
 
 JUDGE_MODEL = CONFIG.gen_models["flash"]
 METRICS = Path(__file__).parent / "analysis" / "baseline_metrics.json"

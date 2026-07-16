@@ -27,9 +27,10 @@ from evals.api import router as evals_router
 
 from .db import Hit, connect
 from .guardrails import BLOCKED, check_input, check_output
+from .query.agent import resume_deepagent, run_deepagent, stream_agent, stream_deepagent
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer_stream
-from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.gate import NO_ANSWER, ask_gate, gate_retrieve
+from .query.memory import get_memory, list_memories
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -39,7 +40,6 @@ from .query.retrieve import (
     TOP_K,
     source_passage,
 )
-from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
@@ -409,27 +409,20 @@ class QAMemoryDetail(QAMemory):
     research_files: dict[str, str]
 
 
-# The deep agent's Q&A long-term memory (LangGraph store rows under prefix "qa"),
-# queried directly — read-only, so no need to go through the agent's store handle.
+# The deep agent's Q&A long-term memory (rag/query/memory.py pgvector cache), queried
+# read-only.
 @app.get("/qa")
 @limiter.limit(RATE_LIMIT)
 def qa_memories(request: Request) -> list[QAMemory]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT key, value->>'question' AS question, created_at"
-            " FROM store WHERE prefix = 'qa' ORDER BY created_at DESC LIMIT 200"
-            # ponytail: hard cap, paginate if the cache outgrows it
-        ).fetchall()
-    return [QAMemory(**row) for row in rows]
+        return [QAMemory(**row) for row in list_memories(conn)]
 
 
 @app.get("/qa/{key}")
 @limiter.limit(RATE_LIMIT)
 def qa_memory(request: Request, key: str) -> QAMemoryDetail:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT value, created_at FROM store WHERE prefix = 'qa' AND key = %s", (key,)
-        ).fetchone()
-    if row is None:
+        record = get_memory(conn, key)
+    if record is None:
         raise HTTPException(status_code=404, detail="memory not found")
-    return QAMemoryDetail(key=key, created_at=row["created_at"], **row["value"])
+    return QAMemoryDetail(**record)

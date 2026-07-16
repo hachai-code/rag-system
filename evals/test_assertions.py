@@ -23,8 +23,8 @@ from rag import (
     search,
 )
 from rag.app import AskRequest
+from rag.query.agent import _step_label
 from rag.query.answer import _chunk_citations, _citations
-from rag.query.deepagent import _step_label, format_hits_for_deepagent
 from rag.query.retrieve import (
     RELEVANCE_THRESHOLD,
     _dedupe_to_parent,
@@ -32,6 +32,7 @@ from rag.query.retrieve import (
     _rerank,
     no_relevant_hits,
 )
+from rag.query.tools import format_corpus_hits
 
 # Two chunks standing in for retrieved hits. `_citations` indexes into this list by
 # the citation's document_index, exactly as the live code does.
@@ -194,52 +195,47 @@ def test_rerank_empty_candidates_returns_empty():
     assert _rerank("any question", [], k=5) == []
 
 
-def test_format_hits_for_deepagent_is_numbered_and_citable():
+def test_format_corpus_hits_is_numbered_and_citable():
     """The retrieve_corpus tool renders hits as numbered, cite-able passages: every
     hit appears with a 1-based index the agent can cite by, plus its title and text."""
-    text = format_hits_for_deepagent(HITS)
+    text = format_corpus_hits(HITS)
     for i, hit in enumerate(HITS, 1):
         assert f"[{i}]" in text
         assert hit["title"] in text
         assert hit["content"] in text
 
 
-def test_format_hits_registry_keeps_stable_numbers():
+def test_format_corpus_hits_registry_keeps_stable_numbers():
     """With a shared registry, each chunk keeps a stable [n] across retrievals: a chunk
     seen earlier reuses its number instead of renumbering to [1], and the registry
     records the chunk_id so the frontend can open the passage."""
     registry: dict = {}
-    first = format_hits_for_deepagent(HITS, registry)
+    first = format_corpus_hits(HITS, registry)
     assert "[1]" in first and "[2]" in first
-    again = format_hits_for_deepagent([HITS[1]], registry)  # re-retrieve the 2nd hit alone
+    again = format_corpus_hits([HITS[1]], registry)  # re-retrieve the 2nd hit alone
     assert "[2]" in again and "[1]" not in again
     assert registry[HITS[1]["id"]]["chunk_id"] == HITS[1]["id"]
 
 
-def test_over_research_budget_caps_web_calls():
-    """The web tools charge one call each against a per-run budget keyed by thread_id;
-    once the budget is spent the tool is told to stop. No thread_id means no cap."""
-    from rag.query.deepagent import RESEARCH_BUDGET, _budgets, _over_research_budget, _web_calls
+def test_budget_caps_web_calls():
+    """The web tools charge one call each against a per-run Budget shared across the whole
+    deep-agent run; once the budget is spent, charge() reports True so the tool stops. A
+    limit of 0 turns the cap off."""
+    from rag.query.tools import Budget
 
-    cfg = {"configurable": {"thread_id": "t-budget"}}
-    _web_calls["t-budget"] = RESEARCH_BUDGET - 1
-    assert _over_research_budget(cfg) is False  # this call spends exactly the budget
-    assert _over_research_budget(cfg) is True  # one past the budget → stop
-    assert _over_research_budget({"configurable": {}}) is False  # untracked run, no cap
-
-    # A per-run budget of 0 turns the cap off — the tool never gets told to stop.
-    _budgets["t-budget"] = 0
-    assert _over_research_budget(cfg) is False
-    _web_calls.pop("t-budget", None)
-    _budgets.pop("t-budget", None)
+    budget = Budget(limit=2)
+    assert budget.charge() is False  # 1st call, within budget
+    assert budget.charge() is False  # 2nd call spends exactly the budget
+    assert budget.charge() is True  # one past the budget → stop
+    assert Budget(limit=0).charge() is False  # 0 = unlimited, never caps
 
 
 def test_step_label_summarizes_each_tool_call():
     """The live trace labels each tool call by its intent, folding in the salient arg
-    (query/url/description). Unknown tools fall back to their raw name."""
+    (query/url/point). Unknown tools fall back to their raw name."""
     assert "stillness" in _step_label("retrieve_corpus", {"query": "stillness"})
     assert "example.com" in _step_label("fetch_page", {"url": "https://example.com"})
-    assert _step_label("write_todos", {}) == "Planning the research"
+    assert "dopamine" in _step_label("research_point", {"point": "dopamine reroutes"})
     assert _step_label("mystery_tool", {}) == "mystery_tool"
 
 
@@ -278,59 +274,13 @@ def test_answer_stream_prose_streams_tokens_and_honors_system(monkeypatch):
     assert len(cites) == len(HITS)  # retrieved chunks emitted as proof
 
 
-def test_unknown_tool_error_redirects_to_real_tools():
-    from rag.query.web_search_agent import _execute_tool
+def test_final_answer_reads_typed_output_with_fallbacks():
+    """The corpus agent's answer is the typed DeepAnswer.answer; a plain-string output
+    (the best-effort path) passes through, and an empty/None output degrades to the
+    no-answer sentinel rather than raising."""
+    from rag.query.agent import _NO_ANSWER, DeepAnswer, _final_answer
 
-    result = _execute_tool("write_todos", '{"todos": []}')
-    assert result.startswith("Tool error")
-    assert "search_web" in result and "fetch_page" in result  # break tool fixation
-
-
-def test_todo_loop_breaker_blocks_noop_write_todos():
-    from rag.query.deepagent import _TodoLoopBreaker
-
-    todos = [{"content": "research", "status": "completed"}]
-    request = SimpleNamespace(
-        tool_call={"name": "write_todos", "args": {"todos": todos}, "id": "tc1"},
-        state={"todos": todos},
-    )
-
-    def handler(_):
-        raise AssertionError("no-op write_todos must not reach the tool")
-
-    result = _TodoLoopBreaker().wrap_tool_call(request, handler)
-    assert "final answer" in result.content
-
-
-def test_todo_loop_breaker_passes_through_real_updates():
-    from rag.query.deepagent import _TodoLoopBreaker
-
-    request = SimpleNamespace(
-        tool_call={
-            "name": "write_todos",
-            "args": {"todos": [{"content": "new", "status": "pending"}]},
-            "id": "tc1",
-        },
-        state={"todos": []},
-    )
-    sentinel = object()
-    assert _TodoLoopBreaker().wrap_tool_call(request, lambda _: sentinel) is sentinel
-
-
-def test_final_answer_falls_back_to_last_ai_text():
-    from langchain_core.messages import AIMessage, HumanMessage
-
-    from rag.query.deepagent import DeepAnswer, _final_answer
-
-    assert _final_answer({"structured_response": DeepAnswer(answer="typed")}) == "typed"
-    assert (
-        _final_answer(
-            {
-                "messages": [
-                    HumanMessage(content="q"),
-                    AIMessage(content="prose answer"),
-                ]
-            }
-        )
-        == "prose answer"
-    )
+    assert _final_answer(DeepAnswer(answer="typed")) == "typed"
+    assert _final_answer("prose answer") == "prose answer"
+    assert _final_answer(DeepAnswer(answer="")) == _NO_ANSWER
+    assert _final_answer(None) == _NO_ANSWER
