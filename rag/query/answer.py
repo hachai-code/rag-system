@@ -228,14 +228,14 @@ def answer(
 
     # PromptedOutput, not tool calls: some OpenRouter models don't reliably emit tool
     # calls for the schema, so we ask for the GroundedAnswer as JSON in the content.
-    # output_retries re-asks the model when the JSON doesn't parse — OpenRouter
+    # retries re-asks the model when the JSON doesn't parse — OpenRouter
     # occasionally truncates a long answer under load and succeeds on retry.
     agent = Agent(
         openrouter_model(model),
         output_type=PromptedOutput(GroundedAnswer),
         instructions=system,
         model_settings=ModelSettings(max_tokens=STRUCTURED_MAX_TOKENS),
-        output_retries=2,
+        retries=2,
     )
     result = agent.run_sync(_openai_user_content(question, hits))
     return _chunk_citations(result.output, hits)

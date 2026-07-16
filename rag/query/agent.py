@@ -12,9 +12,10 @@ the hand-written web loop) and drops their four heavyweight orchestration depend
 Per-run state (web-call budget, corpus citation registry, seen URLs, similar-past-Q&As)
 rides on Pydantic AI `deps`, not module dicts.
 
-Durability/HITL: pydantic-ai 0.8.1 ships no Postgres durable execution, so a HITL pause
-(a deferred `research_point`) serializes its message history to the `agent_threads` table
-and POST /ask/agent/resume continues from it. HITL is opt-in (config: enable_hitl).
+Durability/HITL: v2 HITL is stop-the-world (an approval-gated `research_point` ends the
+run with a `DeferredToolRequests` output), so a pause serializes its message history to
+the `agent_threads` table and POST /ask/agent/resume continues from it. HITL is opt-in
+(config: enable_hitl).
 
 Importing this module needs no keys or DB — the agents build lazily on first use.
 """
@@ -29,8 +30,11 @@ from langfuse import get_client
 from pydantic import BaseModel, Field
 from pydantic_ai import (
     Agent,
+    DeferredToolRequests,
+    DeferredToolResults,
     ModelRetry,
     RunContext,
+    Tool,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
     capture_run_messages,
@@ -39,15 +43,9 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessagesTypeAdapter,
-    ModelRequest,
-    ModelResponse,
     ToolCallPart,
-    ToolReturnPart,
 )
-from pydantic_ai.output import DeferredToolCalls
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.tools import ToolDefinition
-from pydantic_ai.toolsets import DeferredToolset, FunctionToolset
 from pydantic_ai.usage import UsageLimits
 
 from ..clients import openrouter_model
@@ -138,7 +136,7 @@ def web_agent() -> Agent[WebDeps, str]:
         openrouter_model(MODEL),
         deps_type=WebDeps,
         output_type=str,
-        output_retries=MAX_CITATION_RETRIES,
+        retries=MAX_CITATION_RETRIES,
         model_settings=ModelSettings(max_tokens=MAX_TOKENS),
         tools=[web_search, fetch_page],
     )
@@ -170,7 +168,9 @@ def corpus_agent() -> Agent[CorpusDeps, DeepAnswer]:
         deps_type=CorpusDeps,
         output_type=DeepAnswer,
         model_settings=ModelSettings(max_tokens=DEEP_MAX_TOKENS),
-        tools=[retrieve_corpus],
+        # Under HITL, research_point is approval-gated: a call pauses the run
+        # (DeferredToolRequests) until resume_deepagent approves or denies it.
+        tools=[retrieve_corpus, Tool(research_point, requires_approval=ENABLE_HITL)],
     )
 
     @agent.instructions
@@ -195,30 +195,13 @@ async def research_point(ctx: RunContext[CorpusDeps], point: str) -> str:
         return f"Research error: {type(e).__name__}: {e}"
 
 
-# --- HITL wiring (deferred research_point) -----------------------------------------
-
-_RESEARCH_TOOL_DEF = ToolDefinition(
-    name="research_point",
-    description=(
-        "Delegate one corpus point to the external web-research agent to corroborate or "
-        "elaborate it. Returns findings with cited URLs."
-    ),
-    parameters_json_schema={
-        "type": "object",
-        "properties": {"point": {"type": "string", "description": "The point to research."}},
-        "required": ["point"],
-    },
-)
-
-
-def _research_toolset():
-    """research_point as a normal tool, or — under HITL — a deferred one that pauses the
-    run for approval before any external research runs."""
-    return DeferredToolset([_RESEARCH_TOOL_DEF]) if ENABLE_HITL else FunctionToolset([research_point])
+# --- HITL wiring (approval-gated research_point) -----------------------------------
 
 
 def _corpus_output():
-    return [DeepAnswer, DeferredToolCalls] if ENABLE_HITL else DeepAnswer
+    """Under HITL, an approval-gated research_point call ends the run with a
+    DeferredToolRequests instead of a DeepAnswer, so it joins the output union."""
+    return [DeepAnswer, DeferredToolRequests] if ENABLE_HITL else DeepAnswer
 
 
 # --- Small helpers -----------------------------------------------------------------
@@ -264,10 +247,10 @@ def _cited_corpus_sources(registry: dict, answer: str) -> list[dict]:
     return sorted((s for s in registry.values() if s["n"] in cited), key=lambda s: s["n"])
 
 
-def _pending(deferred: DeferredToolCalls) -> list[dict]:
+def _pending(calls: list[ToolCallPart]) -> list[dict]:
     return [
         {"tool": c.tool_name, "summary": " ".join(str(_args(c).get("point", "")).split())[:200]}
-        for c in deferred.tool_calls
+        for c in calls
     ]
 
 
@@ -379,11 +362,15 @@ def stream_agent(question: str):
 # --- Deep agent runs ---------------------------------------------------------------
 
 
-def _persist_thread(thread_id: str, question: str, messages, registry: dict) -> None:
-    """Serialize a paused run's message history + citation registry to agent_threads."""
+def _persist_thread(
+    thread_id: str, question: str, messages, registry: dict, pending_ids: list[str]
+) -> None:
+    """Serialize a paused run's message history + citation registry + the pending
+    approval-gated tool_call_ids to agent_threads, so resume can build DeferredToolResults."""
     blob = {
         "history": ModelMessagesTypeAdapter.dump_python(messages, mode="json"),
         "registry": {str(k): v for k, v in registry.items()},
+        "pending_ids": pending_ids,
     }
     with connect() as conn:
         conn.execute(
@@ -408,6 +395,7 @@ def _load_thread(thread_id: str) -> dict | None:
         "question": row["question"],
         "messages": ModelMessagesTypeAdapter.validate_python(blob["history"]),
         "registry": {int(k): v for k, v in blob["registry"].items()},
+        "pending_ids": blob["pending_ids"],
     }
 
 
@@ -415,18 +403,6 @@ def _delete_thread(thread_id: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM agent_threads WHERE thread_id = %s", (thread_id,))
         conn.commit()
-
-
-def _deferred_calls(messages) -> list[ToolCallPart]:
-    """The pending research_point tool calls from a paused run's last model response."""
-    for msg in reversed(messages):
-        if isinstance(msg, ModelResponse):
-            calls = [
-                p for p in msg.parts if isinstance(p, ToolCallPart) and p.tool_name == "research_point"
-            ]
-            if calls:
-                return calls
-    return []
 
 
 def _corpus_deps(research_budget: int | None, registry: dict | None = None) -> CorpusDeps:
@@ -443,14 +419,16 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
-        result = corpus_agent().run_sync(
-            question, deps=deps, output_type=_corpus_output(), toolsets=[_research_toolset()]
-        )
+        result = corpus_agent().run_sync(question, deps=deps, output_type=_corpus_output())
         output = result.output
-        if isinstance(output, DeferredToolCalls):
-            _persist_thread(thread_id, question, result.all_messages(), deps.registry)
+        if isinstance(output, DeferredToolRequests):
+            pending = output.approvals
+            _persist_thread(
+                thread_id, question, result.all_messages(), deps.registry,
+                [c.tool_call_id for c in pending],
+            )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(output)}
+            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
         answer = _final_answer(output)
         with connect() as conn:
             save_qa_record(
@@ -469,37 +447,26 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     if loaded is None:
         return {"status": "done", "answer": _NO_ANSWER, "thread_id": thread_id}
     deps = _corpus_deps(None, registry=loaded["registry"])
-    returns = []
-    for call in _deferred_calls(loaded["messages"]):
-        if decision == "approve":
-            content = asyncio.run(
-                _web_answer(
-                    f"{RESEARCH_TASK}\n\nPoint to research: {_args(call).get('point', '')}",
-                    WebDeps(budget=deps.budget),
-                    openrouter_model(RESEARCH_SUBAGENT_MODEL),
-                )
-            )
-        else:
-            content = (
-                "The user did not approve external research for this point. Do not research "
-                "it; answer from the corpus passages you already have."
-            )
-        returns.append(
-            ToolReturnPart(tool_name=call.tool_name, content=content, tool_call_id=call.tool_call_id)
-        )
-    history = loaded["messages"] + [ModelRequest(parts=returns)]
+    # Approve → the framework re-invokes research_point itself (using deps.budget); deny →
+    # it returns a denial to the model automatically. No manual tool run either way.
+    approved = decision == "approve"
+    results = DeferredToolResults(approvals={cid: approved for cid in loaded["pending_ids"]})
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent-resume", input=decision
     ) as span:
         result = corpus_agent().run_sync(
-            message_history=history, deps=deps,
-            output_type=_corpus_output(), toolsets=[_research_toolset()],
+            message_history=loaded["messages"], deferred_tool_results=results,
+            deps=deps, output_type=_corpus_output(),
         )
         output = result.output
-        if isinstance(output, DeferredToolCalls):
-            _persist_thread(thread_id, loaded["question"], result.all_messages(), deps.registry)
+        if isinstance(output, DeferredToolRequests):  # another approval round
+            pending = output.approvals
+            _persist_thread(
+                thread_id, loaded["question"], result.all_messages(), deps.registry,
+                [c.tool_call_id for c in pending],
+            )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(output)}
+            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
         answer = _final_answer(output)
         _delete_thread(thread_id)
         span.update(output=answer, metadata={"thread_id": thread_id})
@@ -515,7 +482,7 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
     ) as span:
         try:
             async with corpus_agent().iter(
-                question, deps=deps, output_type=_corpus_output(), toolsets=[_research_toolset()]
+                question, deps=deps, output_type=_corpus_output()
             ) as run:
                 async for node in run:
                     if Agent.is_call_tools_node(node):
@@ -538,10 +505,14 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
                                         "preview": _preview(r.content),
                                     }
             output = run.result.output
-            if isinstance(output, DeferredToolCalls):
-                _persist_thread(thread_id, question, run.result.all_messages(), deps.registry)
+            if isinstance(output, DeferredToolRequests):
+                pending = output.approvals
+                _persist_thread(
+                    thread_id, question, run.result.all_messages(), deps.registry,
+                    [c.tool_call_id for c in pending],
+                )
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-                yield {"type": "awaiting_approval", "thread_id": thread_id, "pending": _pending(output)}
+                yield {"type": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
                 return
             answer = _final_answer(output)
             sources = _cited_corpus_sources(deps.registry, answer)

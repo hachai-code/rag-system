@@ -28,7 +28,7 @@ dependencies = [
     "langchain-deepseek",
     "nemoguardrails>=0.23.0",
     "opentelemetry-instrumentation-fastapi>=0.64b0",
-    "pydantic-ai>=0.8.1",
+    "pydantic-ai-slim[openai]>=2.11.0",
 ]
 
 [dependency-groups]
