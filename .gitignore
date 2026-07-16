@@ -43,3 +43,6 @@ evals/**/langfuse_traces.jsonl
 
 # Inspect AI run logs (regenerate with: inspect eval evals/inspect-ai/task.py)
 evals/inspect-ai/logs/
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/

@@ -124,8 +124,10 @@ def _chat_model(model: str) -> ChatOpenAI:
         temperature=0,
         # The final answer rides back as a single DeepAnswer tool-call argument; with no
         # ceiling a long one truncated mid-JSON (unterminated string -> lost answer).
-        max_tokens=8192,
-        extra_body=_OPENROUTER_PROVIDER,
+        # In extra_body, not the max_tokens kwarg: langchain-openai rewrites the kwarg
+        # to max_completion_tokens, which no endpoint declares, so require_parameters
+        # routing finds zero endpoints (404).
+        extra_body={**_OPENROUTER_PROVIDER, "max_tokens": 8192},
         stream_usage=True,
         max_retries=6,
     )
