@@ -37,10 +37,8 @@ from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
 from openai import OpenAI
 
-from evals.answer.judge import NO_ANSWER
-from rag import answer, search
 from rag.db import connect
-from rag.query.retrieve import RELEVANCE_THRESHOLD
+from rag.query.gate import ask_gate
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "deepeval_results.jsonl"
@@ -93,13 +91,10 @@ def metrics(judge: DeepSeekJudge) -> dict:
 
 
 def rag_answer(conn, question: str) -> tuple[str, list[dict]]:
-    """Answer as /ask does — search, relevance gate, generate — but keep the hits so they
-    can become the DeepEval retrieval_context."""
-    hits = search(conn, question)
-    if not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD:
-        return NO_ANSWER, hits
-    text, _ = answer(question, hits)
-    return text, hits
+    """Answer as /ask does, via the shared ask_gate, keeping the hits so they can become
+    the DeepEval retrieval_context."""
+    result = ask_gate(conn, question)
+    return result.answer, result.hits
 
 
 def score(metric, tc: LLMTestCase) -> dict:

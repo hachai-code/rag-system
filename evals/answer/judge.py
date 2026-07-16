@@ -29,11 +29,10 @@ import instructor
 import psycopg
 from pydantic import BaseModel, Field
 
-from rag import answer, search
 from rag.clients import OPENROUTER_BASE_URL
 from rag.config import CONFIG
 from rag.db import connect
-from rag.query.retrieve import RELEVANCE_THRESHOLD
+from rag.query.gate import ask_gate
 
 EVAL_FILE = Path(__file__).parent / "data" / "rag_system_human_eval.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "judgments.jsonl"
@@ -159,14 +158,10 @@ def judge_dimension(client, code: str, question: str, answer_text: str, ideal: s
 
 
 def rag_answer(conn: psycopg.Connection, question: str) -> str:
-    """Answer exactly as app.py's /ask does: search, the relevance gate, then generate.
-    A hard model refusal (stop_reason='refusal') has no text to return, so we surface
-    the REFUSED sentinel instead of letting the empty content crash the caller."""
-    hits = search(conn, question)
-    if not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD:
-        return NO_ANSWER
-    text, _ = answer(question, hits)
-    return text or REFUSED
+    """Answer exactly as app.py's /ask does, via the shared ask_gate. A hard model refusal
+    (stop_reason='refusal') has no text to return, so we surface the REFUSED sentinel
+    instead of letting the empty content crash the caller."""
+    return ask_gate(conn, question).answer or REFUSED
 
 
 def eval_items() -> list[dict]:

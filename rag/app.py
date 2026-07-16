@@ -27,8 +27,9 @@ from evals.api import router as evals_router
 
 from .db import Hit, connect
 from .guardrails import BLOCKED, check_input, check_output
-from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
+from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer_stream
 from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
+from .query.gate import NO_ANSWER, ask_gate, gate_retrieve
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -36,16 +37,12 @@ from .query.retrieve import (
     QUERY_ENHANCEMENT,
     RERANK_DEPTH,
     TOP_K,
-    covered,
-    retrieve,
     source_passage,
 )
 from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
-
-NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
 # Rate limit per client IP. In-memory storage → per-process; point Limiter at Redis
 # (storage_uri=...) to share across workers.
@@ -179,11 +176,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             span.update(output=BLOCKED)
             return AskResponse(answer=BLOCKED, citations=[], sources=[])
         with connect() as conn:
-            ok, gate = covered(conn, body.question)
-            if not ok:
-                span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = retrieve(
+            result = ask_gate(
                 conn,
                 body.question,
                 k=body.top_k,
@@ -191,19 +184,23 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                 query_enhancement=body.query_enhancement,
                 parent_document=body.parent_document,
                 hype=body.hype,
+                model=GEN_MODELS[body.model],
+                fmt=body.format,
             )
-        span.update(metadata={"retrieved": _retrieved_meta(hits)})
-        text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
-        if check_output(body.question, text):
+        span.update(metadata={"retrieved": _retrieved_meta(result.hits)})
+        if result.gated:
+            span.update(output=NO_ANSWER)
+            return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
+        if check_output(body.question, result.answer):
             span.update(output=BLOCKED)
             return AskResponse(answer=BLOCKED, citations=[], sources=[])
-        span.update(output=text)
+        span.update(output=result.answer)
         return AskResponse(
-            answer=text,
-            citations=[Citation(**c) for c in citations],
+            answer=result.answer,
+            citations=[Citation(**c) for c in result.citations],
             sources=[
                 Source(title=h["title"], source=h["source"], distance=h.get("distance"))
-                for h in hits
+                for h in result.hits
             ],
         )
 
@@ -224,12 +221,7 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                 yield f"data: {json.dumps({'type': 'text', 'text': BLOCKED})}\n\n"
                 return
             with connect() as conn:
-                ok, gate = covered(conn, body.question)
-                if not ok:
-                    span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                    yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
-                    return
-                hits = retrieve(
+                gated, hits = gate_retrieve(
                     conn,
                     body.question,
                     k=body.top_k,
@@ -239,6 +231,10 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     hype=body.hype,
                 )
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
+            if gated:
+                span.update(output=NO_ANSWER)
+                yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
+                return
             answer_text = []
             for event in answer_stream(
                 body.question, hits, model=GEN_MODELS[body.model], fmt=body.format
