@@ -71,9 +71,11 @@ e.g. [1], [2].
 2. Pull out the substantive points your draft rests on. Delegate each one to the \
 external-research subagent (via the task tool) to corroborate or elaborate it with \
 outside sources, and save the subagent's findings to a file named for that point.
-3. Return the complete answer: every corpus point enriched with what the research \
-turned up, written out in full and citing both the corpus passage [n] and the web \
-URLs the subagent reported.
+3. Deliver the complete answer by calling the DeepAnswer tool — every corpus point \
+enriched with what the research turned up, written out in full, citing both the corpus \
+passage [n] and the web URLs the subagent reported. The DeepAnswer tool call is the \
+only way to return your answer; never write the final answer to a file. Files (step 2) \
+hold intermediate research findings, never the answer itself.
 
 If the corpus does not cover the question, say so plainly instead of guessing.
 
@@ -120,6 +122,9 @@ def _chat_model(model: str) -> ChatOpenAI:
         base_url=OPENROUTER_BASE_URL,
         api_key=environ["OPENROUTER_API_KEY"],
         temperature=0,
+        # The final answer rides back as a single DeepAnswer tool-call argument; with no
+        # ceiling a long one truncated mid-JSON (unterminated string -> lost answer).
+        max_tokens=8192,
         extra_body=_OPENROUTER_PROVIDER,
         stream_usage=True,
         max_retries=6,
