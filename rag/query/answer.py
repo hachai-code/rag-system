@@ -1,19 +1,18 @@
 """Query stage 2: answer over the retrieved chunks, with grounded citations.
 
 Two provider paths behind one `answer()` — Anthropic (native Citations API) and an
-OpenAI-compatible path (OpenRouter via instructor, citations rebuilt from structured
-output). See README "Generation / provider seam".
+OpenAI-compatible path (OpenRouter via Pydantic AI structured output, citations rebuilt
+from that output). See README "Generation / provider seam".
 """
 
-import os
 from typing import TypedDict
 
 import anthropic
-import instructor
-from instructor.core import IncompleteOutputException
 from pydantic import BaseModel
+from pydantic_ai import Agent, PromptedOutput
+from pydantic_ai.settings import ModelSettings
 
-from ..clients import OPENROUTER_BASE_URL, openrouter_client
+from ..clients import openrouter_client, openrouter_model
 from ..config import CONFIG
 from ..db import Hit
 
@@ -227,33 +226,19 @@ def answer(
     if fmt == "prose":
         return answer_prose(question, hits, model=model, system=system)
 
-    # OPENROUTER_API_KEY passed as the OpenAI key against OpenRouter's base URL.
-    # Mode.JSON, not TOOLS: some OpenRouter models don't reliably emit tool calls for
-    # the schema, so we ask for JSON in the content instead.
-    client = instructor.from_provider(
-        f"openai/{model}",
-        base_url=OPENROUTER_BASE_URL,
-        api_key=os.environ["OPENROUTER_API_KEY"],
-        mode=instructor.Mode.JSON,
+    # PromptedOutput, not tool calls: some OpenRouter models don't reliably emit tool
+    # calls for the schema, so we ask for the GroundedAnswer as JSON in the content.
+    # output_retries re-asks the model when the JSON doesn't parse — OpenRouter
+    # occasionally truncates a long answer under load and succeeds on retry.
+    agent = Agent(
+        openrouter_model(model),
+        output_type=PromptedOutput(GroundedAnswer),
+        instructions=system,
+        model_settings=ModelSettings(max_tokens=STRUCTURED_MAX_TOKENS),
+        output_retries=2,
     )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": _openai_user_content(question, hits)},
-    ]
-    # instructor's max_retries covers parse errors, not a length cutoff, so retry that
-    # ourselves — OpenRouter occasionally truncates under load and succeeds on retry.
-    for attempt in range(3):
-        try:
-            grounded = client.create(
-                response_model=GroundedAnswer,
-                max_tokens=STRUCTURED_MAX_TOKENS,
-                messages=messages,
-            )
-            break
-        except IncompleteOutputException:
-            if attempt == 2:
-                raise
-    return _chunk_citations(grounded, hits)
+    result = agent.run_sync(_openai_user_content(question, hits))
+    return _chunk_citations(result.output, hits)
 
 
 def answer_stream(
