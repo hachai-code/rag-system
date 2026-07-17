@@ -38,8 +38,8 @@ from .query.retrieve import (
     QUERY_ENHANCEMENT,
     RERANK_DEPTH,
     TOP_K,
-    source_passage,
 )
+from .query.sources import source_passage
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000

@@ -25,8 +25,8 @@ from rag.query.retrieve import (
     retrieve,
     rrf,
     search,
-    source_passage,
 )
+from rag.query.sources import source_passage
 
 __all__ = [
     "search",

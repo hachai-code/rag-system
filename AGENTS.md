@@ -24,7 +24,7 @@ uv run pytest                              # unit assertions (fast, no DB/networ
 uv run ruff check . && uv run ruff format .  # lint + format (CI enforces both)
 uv run fastapi dev rag/app.py              # serve the API on :8000
 uv run python -m db.migrate                # apply pending schema migrations
-uv run python -m rag.pipeline              # rebuild the index (costs Voyage credits)
+uv run python -m rag.indexing.index build  # rebuild the index (costs Voyage credits)
 uv run python -m evals.run --config evals/configs/baseline.json  # full eval (costs LLM credits)
 ```
 
