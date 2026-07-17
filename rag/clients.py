@@ -26,7 +26,9 @@ def openrouter_model(model: str) -> OpenAIChatModel:
     """The Pydantic AI model over the OpenRouter seam, for the structured-output path in
     answer.py. Cached per model id (mirrors voyage_client); reads OPENROUTER_API_KEY on
     first use so importing rag needs no keys."""
-    return OpenAIChatModel(model, provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"]))
+    return OpenAIChatModel(
+        model, provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"])
+    )
 
 
 @lru_cache(maxsize=1)

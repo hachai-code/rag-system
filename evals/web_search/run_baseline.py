@@ -115,6 +115,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     import rag.query.agent as agent
+
     # Baseline runs on the cheap model; recorded in every row.
     agent.MODEL = CONFIG.gen_models["flash"]
     if args.no_critique:

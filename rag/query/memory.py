@@ -77,8 +77,7 @@ def save_qa_record(
         "research_files": {},  # the virtual FS is gone; findings return in-band now
     }
     conn.execute(
-        "INSERT INTO qa_memory (key, question, value, embedding)"
-        " VALUES (%s, %s, %s, %s::vector)",
+        "INSERT INTO qa_memory (key, question, value, embedding) VALUES (%s, %s, %s, %s::vector)",
         (uuid4().hex, question, psycopg.types.json.Jsonb(value), _embed(question)),
     )
     conn.commit()

@@ -99,9 +99,7 @@ def sse(events: Iterable[dict]) -> EventSourceResponse:
     event's own separator wins over the response's). Events are sync generators, which
     sse-starlette runs in a threadpool, same as StreamingResponse did.
     """
-    return EventSourceResponse(
-        (JSONServerSentEvent(e, sep="\n") for e in events), sep="\n"
-    )
+    return EventSourceResponse((JSONServerSentEvent(e, sep="\n") for e in events), sep="\n")
 
 
 class AskRequest(BaseModel):

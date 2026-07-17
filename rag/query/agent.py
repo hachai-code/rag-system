@@ -220,7 +220,11 @@ def _step_label(name: str, args: dict) -> str:
         return f"Searching the corpus for “{args.get('query', '')}”"
     if name == "research_point":
         point = " ".join(str(args.get("point", "")).split())
-        return f"Delegating research: {point[:100]}…" if len(point) > 100 else f"Delegating research: {point}"
+        return (
+            f"Delegating research: {point[:100]}…"
+            if len(point) > 100
+            else f"Delegating research: {point}"
+        )
     if name == "web_search":
         return f"Web search: “{args.get('query', '')}”"
     if name == "fetch_page":
@@ -424,16 +428,27 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
         if isinstance(output, DeferredToolRequests):
             pending = output.approvals
             _persist_thread(
-                thread_id, question, result.all_messages(), deps.registry,
+                thread_id,
+                question,
+                result.all_messages(),
+                deps.registry,
                 [c.tool_call_id for c in pending],
             )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
+            return {
+                "status": "awaiting_approval",
+                "thread_id": thread_id,
+                "pending": _pending(pending),
+            }
         answer = _final_answer(output)
         with connect() as conn:
             save_qa_record(
-                conn, question, answer,
-                _cited_corpus_sources(deps.registry, answer), sorted(_cited_urls(answer)), top_score,
+                conn,
+                question,
+                answer,
+                _cited_corpus_sources(deps.registry, answer),
+                sorted(_cited_urls(answer)),
+                top_score,
             )
         span.update(output=answer, metadata={"thread_id": thread_id})
     return {"status": "done", "answer": answer, "thread_id": thread_id}
@@ -455,18 +470,27 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
         as_type="span", name="rag-agent-resume", input=decision
     ) as span:
         result = corpus_agent().run_sync(
-            message_history=loaded["messages"], deferred_tool_results=results,
-            deps=deps, output_type=_corpus_output(),
+            message_history=loaded["messages"],
+            deferred_tool_results=results,
+            deps=deps,
+            output_type=_corpus_output(),
         )
         output = result.output
         if isinstance(output, DeferredToolRequests):  # another approval round
             pending = output.approvals
             _persist_thread(
-                thread_id, loaded["question"], result.all_messages(), deps.registry,
+                thread_id,
+                loaded["question"],
+                result.all_messages(),
+                deps.registry,
                 [c.tool_call_id for c in pending],
             )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-            return {"status": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
+            return {
+                "status": "awaiting_approval",
+                "thread_id": thread_id,
+                "pending": _pending(pending),
+            }
         answer = _final_answer(output)
         _delete_thread(thread_id)
         span.update(output=answer, metadata={"thread_id": thread_id})
@@ -508,16 +532,25 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
             if isinstance(output, DeferredToolRequests):
                 pending = output.approvals
                 _persist_thread(
-                    thread_id, question, run.result.all_messages(), deps.registry,
+                    thread_id,
+                    question,
+                    run.result.all_messages(),
+                    deps.registry,
                     [c.tool_call_id for c in pending],
                 )
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
-                yield {"type": "awaiting_approval", "thread_id": thread_id, "pending": _pending(pending)}
+                yield {
+                    "type": "awaiting_approval",
+                    "thread_id": thread_id,
+                    "pending": _pending(pending),
+                }
                 return
             answer = _final_answer(output)
             sources = _cited_corpus_sources(deps.registry, answer)
             with connect() as conn:
-                save_qa_record(conn, question, answer, sources, sorted(_cited_urls(answer)), top_score)
+                save_qa_record(
+                    conn, question, answer, sources, sorted(_cited_urls(answer)), top_score
+                )
             span.update(output=answer, metadata={"thread_id": thread_id})
             yield {"type": "sources", "sources": sources}
             yield {"type": "answer", "text": answer, "thread_id": thread_id}
