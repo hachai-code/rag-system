@@ -29,6 +29,7 @@ dependencies = [
     "nemoguardrails>=0.23.0",
     "opentelemetry-instrumentation-fastapi>=0.64b0",
     "pydantic-ai-slim[openai]>=2.11.0",
+    "sse-starlette>=3.4.5",
 ]
 
 [dependency-groups]

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "gen:types": "uv run --directory .. python -c \"import json; from rag.app import app; print(json.dumps(app.openapi(), indent=2))\" > openapi.json && openapi-typescript openapi.json -o lib/types.ts --root-types --root-types-no-schema-prefix --root-types-keep-casing"
   },
   "dependencies": {
     "next": "16.2.9",
@@ -24,6 +25,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
