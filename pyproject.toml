@@ -25,12 +25,10 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "deepeval>=4.0.7",
     "trafilatura>=2.1.0",
-    "langgraph>=1.2",
-    "langgraph-checkpoint-postgres>=2.0.0",
-    "deepagents",
-    "langchain-deepseek",
     "nemoguardrails>=0.23.0",
     "opentelemetry-instrumentation-fastapi>=0.64b0",
+    "pydantic-ai-slim[openai]>=2.11.0",
+    "sse-starlette>=3.4.5",
 ]
 
 [dependency-groups]

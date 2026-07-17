@@ -3,32 +3,34 @@
 Run: uv run fastapi dev rag/app.py
 """
 
-import json
 import os
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from langfuse import Langfuse, get_client
 from langfuse.span_filter import is_default_export_span
 from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from sse_starlette import EventSourceResponse, JSONServerSentEvent
 
 from evals.api import router as evals_router
 
 from .db import Hit, connect
 from .guardrails import BLOCKED, check_input, check_output
-from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer, answer_stream
-from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
+from .query.agent import resume_deepagent, run_deepagent, stream_agent, stream_deepagent
+from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer_stream
+from .query.gate import NO_ANSWER, ask_gate, gate_retrieve
+from .query.memory import get_memory, list_memories
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -36,16 +38,11 @@ from .query.retrieve import (
     QUERY_ENHANCEMENT,
     RERANK_DEPTH,
     TOP_K,
-    covered,
-    retrieve,
-    source_passage,
 )
-from .query.web_search_graph_agent import stream_agent
+from .query.sources import source_passage
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
-
-NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
 # Rate limit per client IP. In-memory storage → per-process; point Limiter at Redis
 # (storage_uri=...) to share across workers.
@@ -91,6 +88,18 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     )
 else:
     langfuse = get_client()
+
+
+def sse(events: Iterable[dict]) -> EventSourceResponse:
+    """Frame an event stream as SSE — the one framing every streaming route uses.
+
+    JSONServerSentEvent, because sse-starlette reads a bare dict as ServerSentEvent
+    kwargs rather than as the payload. sep="\\n" on both the events and the response
+    keeps every frame LF-terminated as before (the library defaults to CRLF, and an
+    event's own separator wins over the response's). Events are sync generators, which
+    sse-starlette runs in a threadpool, same as StreamingResponse did.
+    """
+    return EventSourceResponse((JSONServerSentEvent(e, sep="\n") for e in events), sep="\n")
 
 
 class AskRequest(BaseModel):
@@ -155,6 +164,28 @@ class SourcePassage(BaseModel):
     after: str  # context following the cited chunk
 
 
+class TextEvent(BaseModel):
+    """A slice of the answer, as it generates."""
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class CitationEvent(Citation):
+    """One source backing the answer, sent once the text is complete."""
+
+    type: Literal["citation"] = "citation"
+
+
+# The wire contract of /ask/stream, declared so it reaches the OpenAPI schema (and
+# through it, the frontend's generated types). answer_stream yields these as plain
+# dicts; the model documents the shape, it doesn't validate the stream.
+class StreamEvent(RootModel):
+    """One SSE frame from POST /ask/stream: `text` events, then one `citation` per source."""
+
+    root: Annotated[TextEvent | CitationEvent, Field(discriminator="type")]
+
+
 def _retrieved_meta(hits: list[Hit]) -> list[dict]:
     """Compact retrieval summary for the trace (full chunk text would bloat spans)."""
     return [
@@ -179,11 +210,7 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
             span.update(output=BLOCKED)
             return AskResponse(answer=BLOCKED, citations=[], sources=[])
         with connect() as conn:
-            ok, gate = covered(conn, body.question)
-            if not ok:
-                span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = retrieve(
+            result = ask_gate(
                 conn,
                 body.question,
                 k=body.top_k,
@@ -191,27 +218,31 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
                 query_enhancement=body.query_enhancement,
                 parent_document=body.parent_document,
                 hype=body.hype,
+                model=GEN_MODELS[body.model],
+                fmt=body.format,
             )
-        span.update(metadata={"retrieved": _retrieved_meta(hits)})
-        text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
-        if check_output(body.question, text):
+        span.update(metadata={"retrieved": _retrieved_meta(result.hits)})
+        if result.gated:
+            span.update(output=NO_ANSWER)
+            return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
+        if check_output(body.question, result.answer):
             span.update(output=BLOCKED)
             return AskResponse(answer=BLOCKED, citations=[], sources=[])
-        span.update(output=text)
+        span.update(output=result.answer)
         return AskResponse(
-            answer=text,
-            citations=[Citation(**c) for c in citations],
+            answer=result.answer,
+            citations=[Citation(**c) for c in result.citations],
             sources=[
                 Source(title=h["title"], source=h["source"], distance=h.get("distance"))
-                for h in hits
+                for h in result.hits
             ],
         )
 
 
 # Server-Sent Events: `text` events stream in, then one `citation` event per source.
-@app.post("/ask/stream")
+@app.post("/ask/stream", responses={200: {"model": StreamEvent, "description": "SSE stream"}})
 @limiter.limit(RATE_LIMIT)
-def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
+def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
     # The span lives inside the generator so the streamed generation nests under it.
     def events():
         with langfuse.start_as_current_observation(
@@ -221,15 +252,10 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
             # output check couldn't unsend them.
             if check_input(body.question):
                 span.update(output=BLOCKED)
-                yield f"data: {json.dumps({'type': 'text', 'text': BLOCKED})}\n\n"
+                yield {"type": "text", "text": BLOCKED}
                 return
             with connect() as conn:
-                ok, gate = covered(conn, body.question)
-                if not ok:
-                    span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                    yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
-                    return
-                hits = retrieve(
+                gated, hits = gate_retrieve(
                     conn,
                     body.question,
                     k=body.top_k,
@@ -239,35 +265,38 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
                     hype=body.hype,
                 )
             span.update(metadata={"retrieved": _retrieved_meta(hits)})
+            if gated:
+                span.update(output=NO_ANSWER)
+                yield {"type": "text", "text": NO_ANSWER}
+                return
             answer_text = []
             for event in answer_stream(
                 body.question, hits, model=GEN_MODELS[body.model], fmt=body.format
             ):
                 if event["type"] == "text":
                     answer_text.append(event["text"])
-                yield f"data: {json.dumps(event)}\n\n"
+                yield event
             span.update(output="".join(answer_text))
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return sse(events())
 
 
 class AgentRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=MAX_QUESTION_CHARS)]
 
 
-# SSE: step_started / answer_token / tool_call / tool_result / critique events
-# stream in as the agent works, terminated by one done (or error) event.
+# SSE: tool_call / tool_result events stream in as the web agent works, terminated by
+# one done (or error) event.
 @app.post("/agent/stream")
 @limiter.limit(RATE_LIMIT)
-def agent_stream(request: Request, body: AgentRequest) -> StreamingResponse:
+def agent_stream(request: Request, body: AgentRequest) -> EventSourceResponse:
     def events():
         if check_input(body.question):
-            yield f"data: {json.dumps({'type': 'error', 'message': BLOCKED})}\n\n"
+            yield {"type": "error", "message": BLOCKED}
             return
-        for event in stream_agent(body.question):
-            yield f"data: {json.dumps(event)}\n\n"
+        yield from stream_agent(body.question)
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return sse(events())
 
 
 class DeepAgentRequest(BaseModel):
@@ -294,6 +323,71 @@ class AwaitingApproval(BaseModel):
 class ResumeRequest(BaseModel):
     thread_id: Annotated[str, Field(min_length=1)]
     decision: Literal["approve", "reject"]
+
+
+class CorpusSource(BaseModel):
+    """A corpus passage the deep agent's answer cites. `n` is its stable [n] marker in
+    the answer text; chunk_id opens it via GET /source/{chunk_id}."""
+
+    n: int
+    chunk_id: int
+    title: str
+    source: str
+
+
+class StatusEvent(BaseModel):
+    """A tool call the agent started. scope "research" = inside the web-research subagent."""
+
+    type: Literal["status"] = "status"
+    scope: Literal["main", "research"]
+    call_id: str
+    tool: str
+    label: str
+
+
+class ResultEvent(BaseModel):
+    """What a tool returned, correlated to its StatusEvent by call_id."""
+
+    type: Literal["result"] = "result"
+    call_id: str
+    preview: str
+
+
+class SourcesEvent(BaseModel):
+    type: Literal["sources"] = "sources"
+    sources: list[CorpusSource]
+
+
+class AnswerEvent(BaseModel):
+    type: Literal["answer"] = "answer"
+    text: str
+    thread_id: str
+
+
+class AwaitingApprovalEvent(BaseModel):
+    """The HITL gate paused the run; POST /ask/agent/resume continues it."""
+
+    type: Literal["awaiting_approval"] = "awaiting_approval"
+    thread_id: str
+    pending: list[dict[str, str]]
+
+
+class ErrorEvent(BaseModel):
+    type: Literal["error"] = "error"
+    message: str
+
+
+# As with StreamEvent: declared for the OpenAPI schema (and the generated frontend
+# types). stream_deepagent yields these as plain dicts — documentation, not validation.
+class DeepAgentEvent(RootModel):
+    """One SSE frame from GET /ask/agent/run/{run_id}: a `status` per tool call and a
+    `result` per tool result as the agent works, then `sources` + a terminal `answer`
+    — or `awaiting_approval`, or `error`."""
+
+    root: Annotated[
+        StatusEvent | ResultEvent | SourcesEvent | AnswerEvent | AwaitingApprovalEvent | ErrorEvent,
+        Field(discriminator="type"),
+    ]
 
 
 # The Deep Agent path: answers from the corpus via its own tool-driven control
@@ -372,9 +466,12 @@ def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunSta
 
 
 # SSE: replays the run's events from index `after`, then follows until the run ends.
-@app.get("/ask/agent/run/{run_id}")
+@app.get(
+    "/ask/agent/run/{run_id}",
+    responses={200: {"model": DeepAgentEvent, "description": "SSE stream"}},
+)
 @limiter.limit(RATE_LIMIT)
-def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> StreamingResponse:
+def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> EventSourceResponse:
     run = agent_runs.get(run_id)
     if run is None:
         raise HTTPException(404, "unknown run (finished long ago, or the server restarted)")
@@ -383,13 +480,13 @@ def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> Strea
         i = max(0, after)  # a negative cursor would index from the list's end
         while True:
             while i < len(run["events"]):
-                yield f"data: {json.dumps(run['events'][i])}\n\n"
+                yield run["events"][i]
                 i += 1
             if run["done"]:
                 return
             time.sleep(0.3)
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return sse(events())
 
 
 # The chunk a citation points at, reconstructed in its place for the frontend.
@@ -408,32 +505,25 @@ class QAMemory(BaseModel):
 
 class QAMemoryDetail(QAMemory):
     answer: str
-    corpus_sources: list[dict]  # {n, chunk_id, title, source} as written by the agent
+    corpus_sources: list[CorpusSource]
     web_urls: list[str]
     research_files: dict[str, str]
 
 
-# The deep agent's Q&A long-term memory (LangGraph store rows under prefix "qa"),
-# queried directly — read-only, so no need to go through the agent's store handle.
+# The deep agent's Q&A long-term memory (rag/query/memory.py pgvector cache), queried
+# read-only.
 @app.get("/qa")
 @limiter.limit(RATE_LIMIT)
 def qa_memories(request: Request) -> list[QAMemory]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT key, value->>'question' AS question, created_at"
-            " FROM store WHERE prefix = 'qa' ORDER BY created_at DESC LIMIT 200"
-            # ponytail: hard cap, paginate if the cache outgrows it
-        ).fetchall()
-    return [QAMemory(**row) for row in rows]
+        return [QAMemory(**row) for row in list_memories(conn)]
 
 
 @app.get("/qa/{key}")
 @limiter.limit(RATE_LIMIT)
 def qa_memory(request: Request, key: str) -> QAMemoryDetail:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT value, created_at FROM store WHERE prefix = 'qa' AND key = %s", (key,)
-        ).fetchone()
-    if row is None:
+        record = get_memory(conn, key)
+    if record is None:
         raise HTTPException(status_code=404, detail="memory not found")
-    return QAMemoryDetail(key=key, created_at=row["created_at"], **row["value"])
+    return QAMemoryDetail(**record)

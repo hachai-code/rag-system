@@ -26,9 +26,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from evals.answer.judge import NO_ANSWER
-from rag import answer, search
 from rag.db import connect
+from rag.query.gate import ask_gate
 from rag.query.retrieve import RELEVANCE_THRESHOLD
 
 HERE = Path(__file__).parent
@@ -43,21 +42,20 @@ def load(path: Path) -> list[dict]:
 
 
 def pull_trace(conn, question: str) -> dict:
-    """One trace from the live pipeline: the retrieved chunks plus the answer (or the
-    refusal the relevance gate would return, so a refused query is reviewable too)."""
-    hits = search(conn, question)
+    """One trace from the live pipeline, via the shared ask_gate: the chunks that produced
+    the answer plus the answer itself (or the refusal the relevance gate returns, so a
+    refused query is reviewable too). Rerank-fused hits can carry no vector distance."""
+    result = ask_gate(conn, question)
     chunks = [
         {
             "title": h["title"],
             "source": h["source"],
-            "distance": round(float(h["distance"]), 4),
+            "distance": round(float(h["distance"]), 4) if h.get("distance") is not None else None,
             "content": h["content"],
         }
-        for h in hits
+        for h in result.hits
     ]
-    gated = not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD
-    text = NO_ANSWER if gated else answer(question, hits)[0]
-    return {"chunks": chunks, "answer": text}
+    return {"chunks": chunks, "answer": result.answer}
 
 
 def pull() -> None:

@@ -13,6 +13,7 @@ import type {
   StreamEvent,
 } from "@/lib/types";
 import { API_URL } from "@/lib/api";
+import { sseEvents } from "@/lib/sse";
 import { AnswerBody } from "./_components/AnswerBody";
 import { CorpusSources } from "./_components/CorpusSources";
 import { Highlight } from "./_components/Highlight";
@@ -137,39 +138,24 @@ export default function Home() {
             setAnswer("Error: this run is gone (server restarted). Ask again.");
             break;
           }
-          const reader = res.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let done = false;
-          while (!done) {
-            const chunk = await reader.read();
-            done = chunk.done;
-            if (!chunk.value) continue;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const frames = buffer.split("\n\n");
-            buffer = frames.pop() ?? "";
-            for (const frame of frames) {
-              const data = frame.replace(/^data: /, "");
-              if (!data) continue;
-              const event: DeepAgentEvent = JSON.parse(data);
-              received += 1;
-              if (event.type === "status") {
-                setSteps((prev) => [
-                  ...prev,
-                  { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
-                ]);
-              } else if (event.type === "result") {
-                // Attach the tool result to the step it belongs to (matched by call_id).
-                setSteps((prev) =>
-                  prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
-                );
-              } else if (event.type === "sources") {
-                setCorpusSources(event.sources);
-              } else if (event.type === "answer") {
-                setAnswer(event.text);
-              } else if (event.type === "error") {
-                setAnswer(`Error: ${event.message}`);
-              }
+          for await (const event of sseEvents<DeepAgentEvent>(res)) {
+            received += 1;
+            if (event.type === "status") {
+              setSteps((prev) => [
+                ...prev,
+                { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
+              ]);
+            } else if (event.type === "result") {
+              // Attach the tool result to the step it belongs to (matched by call_id).
+              setSteps((prev) =>
+                prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
+              );
+            } else if (event.type === "sources") {
+              setCorpusSources(event.sources);
+            } else if (event.type === "answer") {
+              setAnswer(event.text);
+            } else if (event.type === "error") {
+              setAnswer(`Error: ${event.message}`);
             }
           }
           break; // the server only closes the stream when the run is done
@@ -192,28 +178,11 @@ export default function Home() {
         body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
       });
 
-      // Read the SSE stream: frames are separated by a blank line, each one a
-      // "data: {json}" line. We buffer bytes and parse whole frames as they arrive.
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-      while (!done) {
-        const chunk = await reader.read();
-        done = chunk.done;
-        if (!chunk.value) continue;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? ""; // keep the trailing partial frame for next read
-        for (const frame of frames) {
-          const data = frame.replace(/^data: /, "");
-          if (!data) continue;
-          const event: StreamEvent = JSON.parse(data);
-          if (event.type === "text") {
-            setAnswer((prev) => prev + event.text);
-          } else {
-            setCitations((prev) => [...prev, event]);
-          }
+      for await (const event of sseEvents<StreamEvent>(res)) {
+        if (event.type === "text") {
+          setAnswer((prev) => prev + event.text);
+        } else {
+          setCitations((prev) => [...prev, event]);
         }
       }
     } catch {

@@ -13,13 +13,13 @@ rag/
   indexing/          build the index — run once, in order
     ingest.py        1. load the corpus into clean Documents
     chunk.py         2. split Documents into overlapping, metadata-rich chunks
-    embed.py         3. embed chunks with Voyage and store them in pgvector
+    index.py         3. embed chunks into pgvector; build_index() runs 1-3 in sequence
   query/             per request
     retrieve.py      hybrid search (vector + keyword, RRF) then rerank
     answer.py        generate the answer with grounded citations
+    sources.py       reconstruct a cited chunk in its document (click-through)
   app.py             FastAPI service
   ocr.py             one-off: OCR image-only slide PDFs to Markdown
-  pipeline.py        build_index(): runs ingest -> chunk -> embed in sequence
 db/migrations/       ordered schema migrations; db/migrate.py applies pending ones
 evals/               evaluation harness and research artifacts
 frontend/            Next.js UI
@@ -34,7 +34,7 @@ uv sync
 uv run python -m db.migrate               # apply pending schema migrations
 
 uv run python -m rag.ocr                  # optional: OCR the image-only slide PDFs first
-uv run python -m rag.pipeline             # build the index (ingest -> chunk -> embed -> store)
+uv run python -m rag.indexing.index build # build the index (ingest -> chunk -> embed -> store)
 uv run fastapi dev rag/app.py             # serve the API on :8000
 ```
 
@@ -105,14 +105,15 @@ dispatches by `provider` (default `GEN_PROVIDER = "anthropic"`, so production is
 - **anthropic** — the native **Citations API**. Chunks are passed as separate document
   blocks, so each returned citation's `cited_text` is a quote the API extracts from the
   source: it can't fabricate a quote, and `document_index` maps back to the retrieved hit.
-- **openai-compat** — an OpenAI-compatible endpoint (OpenRouter, via `instructor`) for a
+- **openai-compat** — an OpenAI-compatible endpoint (OpenRouter, via Pydantic AI) for a
   cost-efficient alternative model. There's no Citations API off-Anthropic, so instead of
   having the model re-transcribe verbatim quotes (token-heavy and error-prone on weaker
   models) we ask only *which* numbered chunks support each claim. Each citation's
   `cited_text` is then the chunk itself — grounded by construction. The trade-off is
-  granularity: a whole chunk, not the exact supporting sentence. Uses `Mode.JSON` because
-  some OpenRouter models don't reliably emit tool calls for the schema, and retries on a
-  length cutoff (OpenRouter occasionally truncates under load).
+  granularity: a whole chunk, not the exact supporting sentence. Uses `PromptedOutput`
+  (JSON in the content) rather than tool-calling, because some OpenRouter models don't
+  reliably emit tool calls for the schema, and retries when the output doesn't parse
+  (OpenRouter occasionally truncates under load).
 
 Per-query cost is bounded on every axis: the question length is capped at the API boundary,
 retrieval sends a fixed `TOP_K` chunks, and `MAX_TOKENS` caps the output.
