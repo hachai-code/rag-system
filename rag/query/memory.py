@@ -1,9 +1,8 @@
 """The deep agent's Q&A long-term memory: a semantic cache over a plain pgvector table.
 
-Replaces the LangGraph `PostgresStore` Q&A cache. Each completed run stores its question
-(Voyage-embedded), answer, and sources in `qa_memory`; a later run whose question is
-close enough (cosine similarity) is shown the past Q&As as leads. The same table backs
-the read-only /qa views.
+Each completed run stores its question (Voyage-embedded), answer, and sources in
+`qa_memory`; a later run whose question is close enough (cosine similarity) is shown the
+past Q&As as leads. The same table backs the read-only /qa views.
 
 The question is embedded with input_type="document" on both write and lookup so stored
 questions and query questions share one space (Voyage's query/document asymmetry isn't

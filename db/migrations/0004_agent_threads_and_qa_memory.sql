@@ -2,10 +2,12 @@
 -- Both are ADDITIVE: the old `store`/checkpoint tables persist until the Phase 8 cutover.
 
 -- agent_threads: message-history persistence for the deep agent's HITL pause/resume.
--- pydantic-ai 0.8.1 has no Postgres durable execution (only Temporal), so a paused run
--- serializes its ModelMessage history here (ModelMessagesTypeAdapter dump) keyed by
--- thread_id; POST /ask/agent/resume loads it, feeds the approval tool results back, and
--- continues. One row per paused thread; overwritten on re-pause, deleted when the run ends.
+-- pydantic-ai's HITL is stop-the-world — the run ends returning the pending approvals and a
+-- separate later request resumes it — so a paused run serializes its ModelMessage history
+-- here (ModelMessagesTypeAdapter dump) keyed by thread_id; POST /ask/agent/resume loads it,
+-- feeds the approval results back, and continues. A durable-execution backend (DBOS/Temporal)
+-- would add crash-safety *within* a run but would not remove this between-request state.
+-- One row per paused thread; overwritten on re-pause, deleted when the run ends.
 CREATE TABLE IF NOT EXISTS agent_threads (
     thread_id  TEXT PRIMARY KEY,
     question   TEXT        NOT NULL,

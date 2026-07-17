@@ -105,14 +105,15 @@ dispatches by `provider` (default `GEN_PROVIDER = "anthropic"`, so production is
 - **anthropic** — the native **Citations API**. Chunks are passed as separate document
   blocks, so each returned citation's `cited_text` is a quote the API extracts from the
   source: it can't fabricate a quote, and `document_index` maps back to the retrieved hit.
-- **openai-compat** — an OpenAI-compatible endpoint (OpenRouter, via `instructor`) for a
+- **openai-compat** — an OpenAI-compatible endpoint (OpenRouter, via Pydantic AI) for a
   cost-efficient alternative model. There's no Citations API off-Anthropic, so instead of
   having the model re-transcribe verbatim quotes (token-heavy and error-prone on weaker
   models) we ask only *which* numbered chunks support each claim. Each citation's
   `cited_text` is then the chunk itself — grounded by construction. The trade-off is
-  granularity: a whole chunk, not the exact supporting sentence. Uses `Mode.JSON` because
-  some OpenRouter models don't reliably emit tool calls for the schema, and retries on a
-  length cutoff (OpenRouter occasionally truncates under load).
+  granularity: a whole chunk, not the exact supporting sentence. Uses `PromptedOutput`
+  (JSON in the content) rather than tool-calling, because some OpenRouter models don't
+  reliably emit tool calls for the schema, and retries when the output doesn't parse
+  (OpenRouter occasionally truncates under load).
 
 Per-query cost is bounded on every axis: the question length is capped at the API boundary,
 retrieval sends a fixed `TOP_K` chunks, and `MAX_TOKENS` caps the output.

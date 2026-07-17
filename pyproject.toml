@@ -25,7 +25,6 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "deepeval>=4.0.7",
     "trafilatura>=2.1.0",
-    "langchain-deepseek",
     "nemoguardrails>=0.23.0",
     "opentelemetry-instrumentation-fastapi>=0.64b0",
     "pydantic-ai-slim[openai]>=2.11.0",
