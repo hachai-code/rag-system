@@ -30,6 +30,7 @@ from langfuse import get_client
 from pydantic import BaseModel, Field
 from pydantic_ai import (
     Agent,
+    AgentRunResultEvent,
     DeferredToolRequests,
     DeferredToolResults,
     ModelRetry,
@@ -325,32 +326,29 @@ async def _astream_web(question: str):
         as_type="span", name="web-search-agent", input=question
     ) as span:
         try:
-            async with web_agent().iter(
+            async with web_agent().run_stream_events(
                 question,
                 deps=deps,
                 model=openrouter_model(MODEL),
                 usage_limits=UsageLimits(request_limit=WEB_REQUEST_LIMIT),
-            ) as run:
-                async for node in run:
-                    if Agent.is_call_tools_node(node):
-                        async with node.stream(run.ctx) as stream:
-                            async for event in stream:
-                                if isinstance(event, FunctionToolCallEvent):
-                                    p = event.part
-                                    yield {
-                                        "type": "tool_call",
-                                        "name": p.tool_name,
-                                        "id": p.tool_call_id,
-                                        "arguments": p.args_as_json_str(),
-                                    }
-                                elif isinstance(event, FunctionToolResultEvent):
-                                    r = event.result
-                                    yield {
-                                        "type": "tool_result",
-                                        "id": r.tool_call_id,
-                                        "preview": _preview(r.content),
-                                    }
-            answer = run.result.output
+            ) as events:
+                async for event in events:
+                    if isinstance(event, FunctionToolCallEvent):
+                        p = event.part
+                        yield {
+                            "type": "tool_call",
+                            "name": p.tool_name,
+                            "id": p.tool_call_id,
+                            "arguments": p.args_as_json_str(),
+                        }
+                    elif isinstance(event, FunctionToolResultEvent):
+                        yield {
+                            "type": "tool_result",
+                            "id": event.tool_call_id,
+                            "preview": _preview(event.part.content),
+                        }
+                    elif isinstance(event, AgentRunResultEvent):  # always last
+                        answer = event.result.output
             span.update(output=answer)
             yield {"type": "done", "answer": answer, "sources": sorted(deps.seen_urls)}
         except Exception as e:
@@ -505,36 +503,34 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
         as_type="span", name="rag-agent", input=question
     ) as span:
         try:
-            async with corpus_agent().iter(
+            async with corpus_agent().run_stream_events(
                 question, deps=deps, output_type=_corpus_output()
-            ) as run:
-                async for node in run:
-                    if Agent.is_call_tools_node(node):
-                        async with node.stream(run.ctx) as stream:
-                            async for event in stream:
-                                if isinstance(event, FunctionToolCallEvent):
-                                    p = event.part
-                                    yield {
-                                        "type": "status",
-                                        "scope": "main",
-                                        "call_id": p.tool_call_id,
-                                        "tool": p.tool_name,
-                                        "label": _step_label(p.tool_name, _args(p)),
-                                    }
-                                elif isinstance(event, FunctionToolResultEvent):
-                                    r = event.result
-                                    yield {
-                                        "type": "result",
-                                        "call_id": r.tool_call_id,
-                                        "preview": _preview(r.content),
-                                    }
-            output = run.result.output
+            ) as events:
+                async for event in events:
+                    if isinstance(event, FunctionToolCallEvent):
+                        p = event.part
+                        yield {
+                            "type": "status",
+                            "scope": "main",
+                            "call_id": p.tool_call_id,
+                            "tool": p.tool_name,
+                            "label": _step_label(p.tool_name, _args(p)),
+                        }
+                    elif isinstance(event, FunctionToolResultEvent):
+                        yield {
+                            "type": "result",
+                            "call_id": event.tool_call_id,
+                            "preview": _preview(event.part.content),
+                        }
+                    elif isinstance(event, AgentRunResultEvent):  # always last
+                        result = event.result
+            output = result.output
             if isinstance(output, DeferredToolRequests):
                 pending = output.approvals
                 _persist_thread(
                     thread_id,
                     question,
-                    run.result.all_messages(),
+                    result.all_messages(),
                     deps.registry,
                     [c.tool_call_id for c in pending],
                 )
