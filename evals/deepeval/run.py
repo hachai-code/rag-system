@@ -9,9 +9,10 @@ Answers come from the live RAG (search -> relevance gate -> generate), exactly a
 app.py's /ask, so a run exercises retrieval + generation end to end. Every eval item
 has an ideal_answer, so the two reference-based metrics (precision, recall) run on all.
 
-The judge is DeepSeek V4 Flash. DeepEval's built-in DeepSeekModel only knows model IDs
-up to v3.x, so we wrap DeepSeek's OpenAI-compatible endpoint with instructor (already
-a project dep) — schema-validated output with retries, and it sidesteps that stale
+The judge is the shared JUDGE_MODEL from evals/answer/judge.py (Flash via OpenRouter,
+same seam as every other eval path). DeepEval's built-in DeepSeekModel only knows model
+IDs up to v3.x, so we wrap the OpenAI-compatible endpoint with instructor (already a
+project dep) — schema-validated output with retries, and it sidesteps that stale
 model-ID table.
 
 Runs are resumable: each row is appended and flushed, keyed by eval-item id.
@@ -37,23 +38,25 @@ from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
 from openai import OpenAI
 
+from evals.answer.judge import JUDGE_MODEL
+from evals.schema import load_jsonl
+from rag.clients import OPENROUTER_BASE_URL
 from rag.db import connect
 from rag.query.gate import ask_gate
 
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "data" / "deepeval_results.jsonl"
-JUDGE_MODEL = "deepseek-v4-flash"
 
 
 class DeepSeekJudge(DeepEvalBaseLLM):
-    """DeepSeek V4 Flash as a DeepEval judge, via its OpenAI-compatible endpoint + instructor."""
+    """The configured judge model as a DeepEval judge, via OpenRouter + instructor."""
 
     def __init__(self, model: str = JUDGE_MODEL):
         self.model_name = model
         super().__init__(model)
 
     def load_model(self):
-        client = OpenAI(base_url="https://api.deepseek.com", api_key=os.environ["DEEPSEEK_API_KEY"])
+        client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=os.environ["OPENROUTER_API_KEY"])
         return instructor.from_openai(client, mode=instructor.Mode.JSON)
 
     def generate(self, prompt: str, schema=None):
@@ -108,13 +111,11 @@ def score(metric, tc: LLMTestCase) -> dict:
 
 
 def eval_items() -> list[dict]:
-    return [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
+    return load_jsonl(EVAL_FILE)
 
 
 def existing_ids() -> set:
-    if not OUT_FILE.exists():
-        return set()
-    return {json.loads(line)["id"] for line in OUT_FILE.read_text().splitlines() if line.strip()}
+    return {row["id"] for row in load_jsonl(OUT_FILE)}
 
 
 def main() -> None:

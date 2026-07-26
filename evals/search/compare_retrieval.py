@@ -11,9 +11,9 @@ keyword each rank the gold chunk, to see which queries lexical search rescues.
 Run: uv run python -m evals.search.compare_retrieval
 """
 
-import json
 from pathlib import Path
 
+from evals.schema import load_jsonl
 from evals.search.metrics import gold_ids
 from rag import keyword_search, search
 from rag.db import connect
@@ -36,7 +36,7 @@ def fmt(rank: int | None) -> str:
 
 
 def main() -> None:
-    rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
+    rows = load_jsonl(EVAL_FILE)
     graded = [r for r in rows if r.get("relevance_keywords")]
 
     with connect() as conn:

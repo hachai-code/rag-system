@@ -26,6 +26,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
+from evals.schema import load_jsonl as load
 from rag.db import connect
 from rag.query.gate import ask_gate
 from rag.query.retrieve import RELEVANCE_THRESHOLD
@@ -33,12 +34,6 @@ from rag.query.retrieve import RELEVANCE_THRESHOLD
 HERE = Path(__file__).parent
 QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"
 TRACES = HERE / "traces.jsonl"
-
-
-def load(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def pull_trace(conn, question: str) -> dict:

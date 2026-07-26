@@ -1,9 +1,15 @@
-"""Schema for one row of rag_system_human_eval.jsonl, plus shared result aggregation."""
+"""Shared helpers for eval scripts: JSONL loading and result aggregation."""
 
+import json
 from collections import defaultdict
-from typing import Literal
+from pathlib import Path
 
-from pydantic import BaseModel
+
+def load_jsonl(path: Path) -> list[dict]:
+    """All rows of a JSONL file, skipping blank lines; [] if the file doesn't exist."""
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def pass_rate(rows: list[dict]) -> dict[str, float]:
@@ -13,17 +19,3 @@ def pass_rate(rows: list[dict]) -> dict[str, float]:
         for dim, passed in r["scores"].items():
             per_dim[dim].append(passed)
     return {dim: sum(v) / len(v) for dim, v in sorted(per_dim.items())}
-
-
-AxialCode = Literal[
-    "A", "B", "C", "D", "E"
-]  # A=Security/IP, B=Retrieval, C=Generation, D=Grounding, E=Formatting
-
-
-class EvalItem(BaseModel):
-    id: int
-    question: str
-    ideal_answer: str  # empty until filled in by hand
-    axial_codes: list[AxialCode]  # first entry is the primary category used for the split
-    difficulty: Literal["easy", "medium", "hard"]
-    split: Literal["dev", "test"]

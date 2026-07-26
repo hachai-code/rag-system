@@ -22,51 +22,17 @@ from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
     EVAL_FILE,
+    IN_PRICE,
     JUDGE_MODEL,
-    REASONING_OFF,
-    RUBRICS,
-    SYSTEM,
-    Verdict,
+    OUT_PRICE,
     eval_items,
     judge_client,
+    judge_with_usage,
     rag_answer,
 )
 from rag.db import connect
 from rag.query.answer import GEN_MODEL
 from rag.query.retrieve import RELEVANCE_THRESHOLD, TOP_K
-
-# Judge token price (DeepSeek V4 Flash on OpenRouter): $0.09 / $0.18 per 1M in/out.
-IN_PRICE, OUT_PRICE = 0.09 / 1_000_000, 0.18 / 1_000_000
-
-
-def judge_with_usage(client, code: str, question: str, answer_text: str, ideal: str = ""):
-    """judge.judge_dimension, but via create_with_completion so we also get token usage.
-    Returns (Verdict, input_tokens, output_tokens)."""
-    name, criterion, pass_def, fail_def = RUBRICS[code]
-    user = f"Question:\n{question}\n\nAnswer to judge:\n{answer_text}"
-    if ideal:
-        user += f"\n\nReference answer (ground truth):\n{ideal}"
-    verdict, completion = client.create_with_completion(
-        max_tokens=1000,
-        max_retries=2,
-        response_model=Verdict,
-        extra_body=REASONING_OFF,
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM.format(
-                    name=name, criterion=criterion, pass_def=pass_def, fail_def=fail_def
-                ),
-            },
-            {"role": "user", "content": user},
-        ],
-    )
-    # Anthropic usage exposes input_tokens/output_tokens; OpenAI-compatible (OpenRouter)
-    # exposes prompt_tokens/completion_tokens — accept either so one helper serves both judges.
-    usage = completion.usage
-    in_tok = getattr(usage, "input_tokens", None) or usage.prompt_tokens
-    out_tok = getattr(usage, "output_tokens", None) or usage.completion_tokens
-    return verdict, in_tok, out_tok
 
 
 def git_sha() -> str:

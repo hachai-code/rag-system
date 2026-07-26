@@ -10,7 +10,6 @@ pulls the judge client into the serving process). No rate limit — the limiter 
 in rag/app.py and this is a read-only local aggregate.
 """
 
-import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from evals.schema import pass_rate
+from evals.schema import load_jsonl, pass_rate
 from rag.db import connect
 
 EVAL_FILE = Path(__file__).parent / "answer" / "data" / "rag_system_human_eval.jsonl"
@@ -75,7 +74,7 @@ class RunDetail(BaseModel):
 
 
 def _split_map() -> dict[int, str]:
-    return {row["id"]: row["split"] for row in map(json.loads, EVAL_FILE.read_text().splitlines())}
+    return {row["id"]: row["split"] for row in load_jsonl(EVAL_FILE)}
 
 
 @router.get("/evals/summary")

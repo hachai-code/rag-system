@@ -26,7 +26,6 @@ from evals.answer.judge import eval_items
 from evals.answer.judge_db import judge_client
 from evals.run import evaluate, load_config
 from rag.db import connect
-from rag.query.answer import ANSWER_FORMAT
 
 BASELINE = Path(__file__).parent / "baseline_metrics.json"
 THRESHOLD = 0.15
@@ -49,21 +48,7 @@ def measure(config_path: str, split: str, limit: int | None) -> tuple[dict, dict
     per_dim = defaultdict(list)
     succeeded = 0
     with connect() as conn:
-        for r in evaluate(
-            conn,
-            client,
-            items,
-            cfg["retrieval"]["top_k"],
-            cfg["retrieval"]["relevance_threshold"],
-            cfg["retrieval"].get("method", "rerank"),
-            cfg["retrieval"].get("query_enhancement"),
-            cfg["retrieval"].get("parent_document", False),
-            cfg["retrieval"].get("hype", False),
-            cfg["generation"]["provider"],
-            cfg["generation"]["model"],
-            gen_prompt,
-            cfg["generation"].get("format", ANSWER_FORMAT),
-        ):
+        for r in evaluate(conn, client, items, cfg, gen_prompt):
             succeeded += 1
             for dim, passed in r["scores"].items():
                 per_dim[dim].append(passed)

@@ -29,11 +29,13 @@ from pathlib import Path
 import psycopg
 from openai import OpenAI
 
+from evals.schema import load_jsonl
 from rag import answer, search
 from rag.clients import OPENROUTER_BASE_URL
 from rag.config import CONFIG
 from rag.db import connect
-from rag.query.retrieve import RELEVANCE_THRESHOLD
+from rag.query.gate import NO_ANSWER
+from rag.query.retrieve import no_relevant_hits
 
 OUT_FILE = Path(__file__).parent / "data" / "answer_feedback.jsonl"
 N_ITEMS = 25  # each item is two Flash calls + the app's own call, so the default is modest
@@ -41,10 +43,6 @@ PER_DOC = 10
 MIN_CHARS = 300
 GEN_MODEL = CONFIG.gen_models["flash"]
 REF_MODEL = CONFIG.gen_models["flash"]
-# Mirrors app.py's no-answer gate so the eval exercises the same refusal behaviour
-# the API would. Replicated rather than imported from app.py to keep the FastAPI app
-# and its Langfuse instrumentation out of an offline eval.
-NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
 GEN_PROMPT = (
     "You write evaluation questions for a retrieval system over the 'innerdance' "
@@ -110,7 +108,7 @@ def rag_answer(conn: psycopg.Connection, question: str) -> tuple[str, list[dict]
     """Answer exactly as app.py's /ask does: vector search, the relevance gate, then
     generate over the retrieved chunks."""
     hits = search(conn, question)
-    if not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD:
+    if no_relevant_hits(hits):
         return NO_ANSWER, hits
     text, _ = answer(question, hits)
     return text, hits
@@ -118,9 +116,7 @@ def rag_answer(conn: psycopg.Connection, question: str) -> tuple[str, list[dict]
 
 def existing_rows() -> list[dict]:
     """Rows already written, so a re-run can resume rather than start over."""
-    if not OUT_FILE.exists():
-        return []
-    return [json.loads(line) for line in OUT_FILE.read_text().splitlines() if line.strip()]
+    return load_jsonl(OUT_FILE)
 
 
 def main() -> None:

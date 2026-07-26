@@ -9,7 +9,8 @@ on:
     paths:
       - 'evals/configs/**'        # retrieval config versions
       - 'rag/**'                  # production system prompt + retrieval/generation logic
-      - 'evals/answer/judge.py'  # judge rubrics
+      - 'evals/answer/judge.py'  # judge prompts
+      - 'evals/taxonomy.json'    # judge rubrics (single home)
 
 jobs:
   regression:

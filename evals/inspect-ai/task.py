@@ -9,6 +9,7 @@ that Inspect doesn't.
 
 # ruff: noqa: E402 — the sys.path insert must precede the rag/evals imports
 import asyncio
+import json
 import re
 import sys
 from pathlib import Path
@@ -22,9 +23,10 @@ from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.scorer import Score, Target, mean, scorer, stderr
 from inspect_ai.solver import Generate, TaskState, solver
 
-from evals.answer.judge import NO_ANSWER, REFUSED, RUBRICS, SYSTEM
+from evals.answer.judge import REFUSED, RUBRICS, SYSTEM
 from rag import answer, retrieve
 from rag.db import connect
+from rag.query.gate import NO_ANSWER
 from rag.query.retrieve import covered
 
 # Stratified 15/75 mirroring the axial-code distribution, all dev split.
@@ -32,9 +34,13 @@ from rag.query.retrieve import covered
 # * = has ideal_answer; + = expected to trip the covered() no-answer gate
 SUBSET = {3, 12, 20, 23, 25, 26, 38, 45, 51, 55, 59, 61, 68, 69, 73}
 
-# Mirrors evals/configs/baseline.json (evals are flash-only; answer() defaults to v4-pro).
-GEN_MODEL = "deepseek/deepseek-v4-flash"
-TOP_K, THRESHOLD, METHOD, FMT = 5, 0.7, "rerank", "claims"
+# Baseline config, read from its one home (evals are flash-only; answer() defaults to v4-pro).
+_BASELINE = json.loads((ROOT / "evals/configs/baseline.json").read_text())
+GEN_MODEL = _BASELINE["generation"]["model"]
+TOP_K = _BASELINE["retrieval"]["top_k"]
+THRESHOLD = _BASELINE["retrieval"]["relevance_threshold"]
+METHOD = _BASELINE["retrieval"]["method"]
+FMT = _BASELINE["generation"]["format"]
 
 EVAL_FILE = ROOT / "evals/answer/data/rag_system_human_eval.jsonl"
 

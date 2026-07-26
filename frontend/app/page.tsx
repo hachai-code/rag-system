@@ -1,26 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type {
   Citation,
   CorpusSource,
   DeepAgentEvent,
   QAMemory,
   QAMemoryDetail,
-  SourcePassage,
   StreamEvent,
 } from "@/lib/types";
-import { API_URL } from "@/lib/api";
+import { API_URL, getJSON } from "@/lib/api";
 import { sseEvents } from "@/lib/sse";
 import { AnswerBody } from "./_components/AnswerBody";
-import { CorpusSources } from "./_components/CorpusSources";
-import { Highlight } from "./_components/Highlight";
+import { DeepAnswer } from "./_components/DeepAnswer";
 import { MemorySidebar } from "./_components/MemorySidebar";
 import { MemoryViewer } from "./_components/MemoryViewer";
+import { SourcePanel } from "./_components/SourcePanel";
 import { TraceStep, type Step } from "./_components/TraceStep";
-import { WebSources } from "./_components/WebSources";
 
 // Resolves once the tab is visible (mobile browsers kill connections of
 // backgrounded tabs), plus a beat for the network to come back.
@@ -45,7 +41,6 @@ export default function Home() {
   const [answer, setAnswer] = useState("");
   const [citations, setCitations] = useState<Citation[]>([]);
   const [openChip, setOpenChip] = useState<number | null>(null);
-  const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
   const [format, setFormat] = useState<"prose" | "claims">("prose");
   const [model, setModel] = useState<"pro" | "flash">("pro");
@@ -66,8 +61,7 @@ export default function Home() {
   const [memory, setMemory] = useState<QAMemoryDetail | null>(null);
 
   async function loadMemories() {
-    const res = await fetch(`${API_URL}/qa`);
-    setMemories(await res.json());
+    setMemories(await getJSON<QAMemory[]>("/qa"));
   }
   useEffect(() => {
     loadMemories();
@@ -83,8 +77,7 @@ export default function Home() {
     }
     setMemoryKey(key);
     setMemory(null);
-    const res = await fetch(`${API_URL}/qa/${key}`);
-    setMemory(await res.json());
+    setMemory(await getJSON<QAMemoryDetail>(`/qa/${key}`));
   }
 
   // Keep the newest agent step in view without growing the page: the trace is a
@@ -111,7 +104,6 @@ export default function Home() {
     setAnswer("");
     setCitations([]);
     setOpenChip(null);
-    setSource(null);
     setSteps([]);
     setCorpusSources([]);
     setSubmitted(question.trim());
@@ -181,9 +173,11 @@ export default function Home() {
       for await (const event of sseEvents<StreamEvent>(res)) {
         if (event.type === "text") {
           setAnswer((prev) => prev + event.text);
-        } else {
+        } else if (event.type === "citation") {
           setCitations((prev) => [...prev, event]);
         }
+        // Any other frame type is a future protocol addition — ignore it rather
+        // than render it as a citation chip.
       }
     } catch {
       setAnswer((prev) => prev + "\n\n[Connection lost — ask again to retry.]");
@@ -192,17 +186,11 @@ export default function Home() {
     }
   }
 
-  // Open a citation: fetch the chunk's place in its document and show it. Clicking
-  // the open chip again closes the panel.
-  async function openSource(i: number, chunkId: number) {
-    if (openChip === i) {
-      setOpenChip(null);
-      return;
-    }
-    setOpenChip(i);
-    setSource(null);
-    const res = await fetch(`${API_URL}/source/${chunkId}`);
-    setSource(await res.json());
+  // Open a citation's source panel; clicking the open chip again closes it.
+  // (The second arg stays for AnswerBody's call shape; SourcePanel fetches by
+  // the open citation's chunk_id itself.)
+  function openSource(i: number, _chunkId: number) {
+    setOpenChip((open) => (open === i ? null : i));
   }
 
   return (
@@ -327,21 +315,15 @@ export default function Home() {
 
       {answer &&
         (deepAgent ? (
-          // The deep agent answers in Markdown (headings, quotes, tables, links);
-          // render it as such. The /ask path stays on AnswerBody for its inline,
-          // span-anchored citation markers, which Markdown can't express.
-          <article className="prose prose-neutral mb-8 max-w-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{answer}</Markdown>
-          </article>
+          // The deep agent answers in Markdown (headings, quotes, tables, links).
+          // The /ask path stays on AnswerBody for its inline, span-anchored
+          // citation markers, which Markdown can't express.
+          <DeepAnswer answer={answer} corpusSources={corpusSources} />
         ) : (
           <article className="mb-8 whitespace-pre-wrap leading-relaxed">
             <AnswerBody answer={answer} citations={citations} openSource={openSource} />
           </article>
         ))}
-
-      {deepAgent && corpusSources.length > 0 && <CorpusSources sources={corpusSources} />}
-
-      {deepAgent && answer && <WebSources answer={answer} />}
 
       {citations.length > 0 && (
         <section>
@@ -361,31 +343,10 @@ export default function Home() {
           </div>
 
           {openChip !== null && (
-            <div className="mt-4 rounded border border-gray-300 p-4">
-              {source === null ? (
-                <p className="text-sm text-gray-400">Loading source…</p>
-              ) : (
-                <>
-                  <div className="mb-3">
-                    <div className="font-medium">{source.title}</div>
-                    <div className="text-xs text-gray-500">
-                      {source.section} · passage {source.chunk_index + 1} of{" "}
-                      {source.n_chunks}
-                    </div>
-                  </div>
-                  <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
-                    <span className="text-gray-400">{source.before}</span>
-                    {source.before && "\n"}
-                    <Highlight
-                      chunk={source.chunk}
-                      cited={citations[openChip].cited_text}
-                    />
-                    {source.after && "\n"}
-                    <span className="text-gray-400">{source.after}</span>
-                  </div>
-                </>
-              )}
-            </div>
+            <SourcePanel
+              chunkId={citations[openChip].chunk_id}
+              cited={citations[openChip].cited_text}
+            />
           )}
         </section>
       )}
