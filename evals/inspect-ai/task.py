@@ -23,9 +23,10 @@ from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.scorer import Score, Target, mean, scorer, stderr
 from inspect_ai.solver import Generate, TaskState, solver
 
-from evals.answer.judge import NO_ANSWER, REFUSED, RUBRICS, SYSTEM
+from evals.answer.judge import REFUSED, RUBRICS, SYSTEM
 from rag import answer, retrieve
 from rag.db import connect
+from rag.query.gate import NO_ANSWER
 from rag.query.retrieve import covered
 
 # Stratified 15/75 mirroring the axial-code distribution, all dev split.

@@ -25,7 +25,6 @@ from psycopg.types.json import Jsonb
 
 from evals.answer.judge import (
     IN_PRICE,
-    NO_ANSWER,
     OUT_PRICE,
     RUBRICS,
     SYSTEM,
@@ -38,6 +37,7 @@ from evals.schema import pass_rate
 from rag import answer, retrieve
 from rag.db import connect
 from rag.query.answer import ANSWER_FORMAT, SYSTEM_PROMPT
+from rag.query.gate import NO_ANSWER
 from rag.query.retrieve import covered
 
 

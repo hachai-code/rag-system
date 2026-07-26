@@ -24,7 +24,12 @@ from rag.db import connect
 EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 OUT_FILE = Path(__file__).parent / "grade.html"
 GRADES = ["correct", "partial", "wrong", "hallucinated"]
-TALLY_LABELS = {"correct": "✅", "partial": "\U0001f7e1", "wrong": "❌", "hallucinated": "\U0001f47b"}
+TALLY_LABELS = {
+    "correct": "✅",
+    "partial": "\U0001f7e1",
+    "wrong": "❌",
+    "hallucinated": "\U0001f47b",
+}
 
 CSS = """
 .cat { color: #888; font-weight: 400; font-size: .85rem; }

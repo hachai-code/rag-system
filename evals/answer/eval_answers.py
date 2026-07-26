@@ -34,7 +34,8 @@ from rag import answer, search
 from rag.clients import OPENROUTER_BASE_URL
 from rag.config import CONFIG
 from rag.db import connect
-from rag.query.retrieve import NO_ANSWER, no_relevant_hits
+from rag.query.gate import NO_ANSWER
+from rag.query.retrieve import no_relevant_hits
 
 OUT_FILE = Path(__file__).parent / "data" / "answer_feedback.jsonl"
 N_ITEMS = 25  # each item is two Flash calls + the app's own call, so the default is modest
