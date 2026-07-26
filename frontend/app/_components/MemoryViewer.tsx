@@ -1,8 +1,5 @@
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { QAMemoryDetail } from "@/lib/types";
-import { CorpusSources } from "./CorpusSources";
-import { WebSources } from "./WebSources";
+import { DeepAnswer } from "./DeepAnswer";
 
 // A stored memory opened from the sidebar: the full cached record — question,
 // markdown answer, corpus sources, web sources, and the research subagent's notes.
@@ -16,11 +13,7 @@ export function MemoryViewer({ memory, onBack }: { memory: QAMemoryDetail; onBac
       <div className="mb-6 text-xs text-gray-500">
         Remembered {new Date(memory.created_at).toLocaleString()}
       </div>
-      <article className="prose prose-neutral mb-8 max-w-none">
-        <Markdown remarkPlugins={[remarkGfm]}>{memory.answer}</Markdown>
-      </article>
-      {memory.corpus_sources.length > 0 && <CorpusSources sources={memory.corpus_sources} />}
-      <WebSources answer={memory.answer} />
+      <DeepAnswer answer={memory.answer} corpusSources={memory.corpus_sources} />
       {Object.keys(memory.research_files).length > 0 && (
         <section className="mb-8">
           <h2 className="mb-2 text-sm font-medium text-gray-500">Research notes</h2>

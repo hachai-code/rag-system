@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 // Aliased: the generated name collides with this component.
 import type { RunDetail as EvalRunDetail } from "@/lib/types";
-import { API_URL } from "@/lib/api";
+import { getJSON } from "@/lib/api";
 
 // Drill-down for one eval run: every judged question with its per-dimension
 // PASS/FAIL and the judge's rationale. Fetched on demand when a run is opened.
@@ -15,8 +15,7 @@ export function RunDetail({ runId, onClose }: { runId: number; onClose: () => vo
   // state — no need to reset detail/error here (which would be a synchronous
   // setState in an effect).
   useEffect(() => {
-    fetch(`${API_URL}/evals/run/${runId}`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`${res.status}`))))
+    getJSON<EvalRunDetail>(`/evals/run/${runId}`)
       .then(setDetail)
       .catch((e) => setError(String(e)));
   }, [runId]);

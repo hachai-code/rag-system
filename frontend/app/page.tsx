@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type {
   Citation,
   CorpusSource,
@@ -11,15 +9,14 @@ import type {
   QAMemoryDetail,
   StreamEvent,
 } from "@/lib/types";
-import { API_URL } from "@/lib/api";
+import { API_URL, getJSON } from "@/lib/api";
 import { sseEvents } from "@/lib/sse";
 import { AnswerBody } from "./_components/AnswerBody";
-import { CorpusSources } from "./_components/CorpusSources";
+import { DeepAnswer } from "./_components/DeepAnswer";
 import { MemorySidebar } from "./_components/MemorySidebar";
 import { MemoryViewer } from "./_components/MemoryViewer";
 import { SourcePanel } from "./_components/SourcePanel";
 import { TraceStep, type Step } from "./_components/TraceStep";
-import { WebSources } from "./_components/WebSources";
 
 // Resolves once the tab is visible (mobile browsers kill connections of
 // backgrounded tabs), plus a beat for the network to come back.
@@ -64,8 +61,7 @@ export default function Home() {
   const [memory, setMemory] = useState<QAMemoryDetail | null>(null);
 
   async function loadMemories() {
-    const res = await fetch(`${API_URL}/qa`);
-    setMemories(await res.json());
+    setMemories(await getJSON<QAMemory[]>("/qa"));
   }
   useEffect(() => {
     loadMemories();
@@ -81,8 +77,7 @@ export default function Home() {
     }
     setMemoryKey(key);
     setMemory(null);
-    const res = await fetch(`${API_URL}/qa/${key}`);
-    setMemory(await res.json());
+    setMemory(await getJSON<QAMemoryDetail>(`/qa/${key}`));
   }
 
   // Keep the newest agent step in view without growing the page: the trace is a
@@ -178,9 +173,11 @@ export default function Home() {
       for await (const event of sseEvents<StreamEvent>(res)) {
         if (event.type === "text") {
           setAnswer((prev) => prev + event.text);
-        } else {
+        } else if (event.type === "citation") {
           setCitations((prev) => [...prev, event]);
         }
+        // Any other frame type is a future protocol addition — ignore it rather
+        // than render it as a citation chip.
       }
     } catch {
       setAnswer((prev) => prev + "\n\n[Connection lost — ask again to retry.]");
@@ -318,21 +315,15 @@ export default function Home() {
 
       {answer &&
         (deepAgent ? (
-          // The deep agent answers in Markdown (headings, quotes, tables, links);
-          // render it as such. The /ask path stays on AnswerBody for its inline,
-          // span-anchored citation markers, which Markdown can't express.
-          <article className="prose prose-neutral mb-8 max-w-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{answer}</Markdown>
-          </article>
+          // The deep agent answers in Markdown (headings, quotes, tables, links).
+          // The /ask path stays on AnswerBody for its inline, span-anchored
+          // citation markers, which Markdown can't express.
+          <DeepAnswer answer={answer} corpusSources={corpusSources} />
         ) : (
           <article className="mb-8 whitespace-pre-wrap leading-relaxed">
             <AnswerBody answer={answer} citations={citations} openSource={openSource} />
           </article>
         ))}
-
-      {deepAgent && corpusSources.length > 0 && <CorpusSources sources={corpusSources} />}
-
-      {deepAgent && answer && <WebSources answer={answer} />}
 
       {citations.length > 0 && (
         <section>

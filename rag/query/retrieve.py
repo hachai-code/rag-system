@@ -44,6 +44,10 @@ RERANK_DEPTH = CONFIG.rerank_depth
 # Chunks of surrounding context to show on each side of a cited chunk (click-through).
 SOURCE_WINDOW = CONFIG.source_window
 
+# The Hit projection (db.Hit) every retriever selects; queries append their own
+# score column (cosine distance or ts_rank) and FROM/JOIN clauses.
+HIT_COLS = "c.id, d.title, d.source, c.content"
+
 
 @lru_cache(maxsize=256)
 def embed_query(question: str) -> list[float]:
@@ -59,8 +63,8 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]
     """Return the k chunks most similar to the question, nearest first."""
     embedding = embed_query(question)
     return conn.execute(
-        """
-        SELECT c.id, d.title, d.source, c.content,
+        f"""
+        SELECT {HIT_COLS},
                c.embedding <=> %(emb)s::vector AS distance
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
@@ -94,13 +98,13 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
     websearch_to_tsquery ANDs every term (too strict for a full question), so we swap
     & for | to OR them — any overlap counts and ts_rank orders by match quality."""
     return conn.execute(
-        """
+        f"""
         WITH q AS (
             SELECT replace(
                 websearch_to_tsquery('english', %(question)s)::text, '&', '|'
             )::tsquery AS tsq
         )
-        SELECT c.id, d.title, d.source, c.content,
+        SELECT {HIT_COLS},
                ts_rank(c.content_tsv, q.tsq) AS rank
         FROM chunks c
         JOIN documents d ON d.id = c.document_id, q
@@ -198,8 +202,8 @@ def hype_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list
     hypothetical question."""
     embedding = embed_query(question)
     hits = conn.execute(
-        """
-        SELECT c.id, d.title, d.source, c.content,
+        f"""
+        SELECT {HIT_COLS},
                cq.embedding <=> %(emb)s::vector AS distance
         FROM chunk_questions cq
         JOIN chunks c ON c.id = cq.chunk_id
@@ -269,7 +273,7 @@ def expand_to_parent(
         ).fetchone()
         lo, hi = _parent_range(target["chunk_index"], window)
         rows = conn.execute(
-            """SELECT c.id, d.title, d.source, c.content
+            f"""SELECT {HIT_COLS}
                FROM chunks c JOIN documents d ON d.id = c.document_id
                WHERE c.document_id = %s AND c.chunk_index BETWEEN %s AND %s
                ORDER BY c.chunk_index""",

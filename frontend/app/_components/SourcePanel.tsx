@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { SourcePassage } from "@/lib/types";
-import { API_URL } from "@/lib/api";
+import { getJSON } from "@/lib/api";
 import { Highlight } from "./Highlight";
 
 // A cited chunk shown in its place in the document: dimmed context either side, the
@@ -12,11 +12,9 @@ export function SourcePanel({ chunkId, cited }: { chunkId: number; cited?: strin
   useEffect(() => {
     let stale = false;
     setSource(null);
-    fetch(`${API_URL}/source/${chunkId}`)
-      .then((res) => res.json())
-      .then((s) => {
-        if (!stale) setSource(s);
-      });
+    getJSON<SourcePassage>(`/source/${chunkId}`).then((s) => {
+      if (!stale) setSource(s);
+    });
     return () => {
       stale = true;
     };

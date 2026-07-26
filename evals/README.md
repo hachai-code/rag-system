@@ -11,9 +11,11 @@ subsystems and the review UIs each get a folder.
 evals/
   DESIGN.md              the plan and rationale
   README.md              this map
-  eval_set.jsonl         the shared test bank — questions, ideal answers, gold chunk ids
-  traces.jsonl           eval traces for viewers/trace_viewer.py
-  langfuse_traces.jsonl  production traces for viewers/langfuse_viewer.py
+  eval_set.jsonl         the frozen v1 bank (25 rows, gold chunk ids) — read by search/,
+                         gen_eval.py, and viewers/grade.py only. The canonical answer-quality
+                         set is answer/data/rag_system_human_eval.jsonl (75 rows, axial codes,
+                         dev/test split) — what the judge, run.py, the CI gate, and the
+                         dashboard all read.
   schema.py              shared result aggregation (pass_rate)
   taxonomy.json          the A–F failure taxonomy — drives judge rubrics + labelling legend
   run.py                 one-command run: retrieve → answer → judge, logged to Postgres
@@ -75,4 +77,5 @@ uv run python -m evals.viewers.trace_viewer               # then open the printe
 
 Data files are anchored relative to each script (`Path(__file__)`), so cwd
 doesn't matter. `eval_set.jsonl` lives at the top because both `search/` and
-`answer/` read it.
+`answer/` read it; the trace files (`traces.jsonl`, `langfuse_traces.jsonl`)
+live next to their viewers in `viewers/`.

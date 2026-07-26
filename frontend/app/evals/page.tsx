@@ -15,7 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import type { EvalsSummary } from "@/lib/types";
-import { API_URL } from "@/lib/api";
+import { API_URL, getJSON } from "@/lib/api";
 import { RunDetail } from "../_components/RunDetail";
 
 // Categorical palette (dataviz reference instance, CVD-validated): one fixed
@@ -68,8 +68,7 @@ export default function EvalsPage() {
   const [openRun, setOpenRun] = useState<number | null>(null);
 
   useEffect(() => {
-    fetch(`${API_URL}/evals/summary`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`${res.status}`))))
+    getJSON<EvalsSummary>("/evals/summary")
       .then(setData)
       .catch((e) => setError(String(e)));
   }, []);
