@@ -23,8 +23,17 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from evals.answer.judge import NO_ANSWER, RUBRICS, SYSTEM, eval_items
-from evals.answer.judge_db import IN_PRICE, OUT_PRICE, git_sha, judge_client, judge_with_usage
+from evals.answer.judge import (
+    IN_PRICE,
+    NO_ANSWER,
+    OUT_PRICE,
+    RUBRICS,
+    SYSTEM,
+    eval_items,
+    judge_client,
+    judge_with_usage,
+)
+from evals.answer.judge_db import git_sha
 from evals.schema import pass_rate
 from rag import answer, retrieve
 from rag.db import connect
@@ -40,7 +49,18 @@ def load_config(path: str) -> tuple[dict, str]:
     """Returns (stored_config, generation_prompt). stored_config is what goes in the run
     record: the knobs plus a content hash of everything that affects the run."""
     cfg = json.loads(Path(path).read_text())
-    ret, gen, jud = cfg["retrieval"], cfg["generation"], cfg["judge"]
+    gen, jud = cfg["generation"], cfg["judge"]
+    # Normalize the retrieval knobs (defaults applied) exactly once — the fingerprint,
+    # the stored run record, and evaluate() all read this one dict.
+    raw = cfg["retrieval"]
+    ret = {
+        "top_k": raw["top_k"],
+        "relevance_threshold": raw["relevance_threshold"],
+        "method": raw.get("method", "rerank"),
+        "query_enhancement": raw.get("query_enhancement"),
+        "parent_document": raw.get("parent_document", False),
+        "hype": raw.get("hype", False),
+    }
 
     # Generation prompt: a file path (a versioned variant) or null = the production prompt.
     prompt_file = gen.get("prompt_file")
@@ -51,12 +71,7 @@ def load_config(path: str) -> tuple[dict, str]:
     # The fingerprint: hash every input that changes what a run produces.
     fingerprint = json.dumps(
         {
-            "top_k": ret["top_k"],
-            "relevance_threshold": ret["relevance_threshold"],
-            "method": ret.get("method", "rerank"),
-            "query_enhancement": ret.get("query_enhancement"),
-            "parent_document": ret.get("parent_document", False),
-            "hype": ret.get("hype", False),
+            **ret,
             "gen_provider": gen["provider"],
             "gen_model": gen["model"],
             "gen_format": gen.get("format", ANSWER_FORMAT),
@@ -88,46 +103,34 @@ def load_config(path: str) -> tuple[dict, str]:
     return stored, gen_prompt
 
 
-def evaluate(
-    conn,
-    client,
-    items,
-    top_k,
-    threshold,
-    method,
-    query_enhancement,
-    parent_document,
-    hype,
-    gen_provider,
-    gen_model,
-    gen_prompt,
-    gen_format,
-):
+def evaluate(conn, client, items, cfg, gen_prompt):
     """Run retrieve -> answer -> judge for each item; yield one result dict per item.
+    `cfg` is a load_config() stored config (knob defaults already applied).
     Skips (and logs) an item whose calls fail so one bad item can't abort the run.
     Shared by run.py (persist + delta) and check_regression.py (the CI gate)."""
+    ret, gen = cfg["retrieval"], cfg["generation"]
     for item in items:
         try:
-            ok, _ = covered(conn, item["question"], threshold)
+            ok, _ = covered(conn, item["question"], ret["relevance_threshold"])
             if not ok:
                 ans = NO_ANSWER
             else:
                 hits = retrieve(
                     conn,
                     item["question"],
-                    k=top_k,
-                    method=method,
-                    query_enhancement=query_enhancement,
-                    parent_document=parent_document,
-                    hype=hype,
+                    k=ret["top_k"],
+                    method=ret["method"],
+                    query_enhancement=ret["query_enhancement"],
+                    parent_document=ret["parent_document"],
+                    hype=ret["hype"],
                 )
                 ans, _ = answer(
                     item["question"],
                     hits,
-                    model=gen_model,
+                    model=gen["model"],
                     system=gen_prompt,
-                    provider=gen_provider,
-                    fmt=gen_format,
+                    provider=gen["provider"],
+                    fmt=gen["format"],
                 )
             t0 = time.perf_counter()
             scores, rationales, in_tok, out_tok = {}, {}, 0, 0
@@ -216,15 +219,6 @@ def main() -> None:
     if args.limit:
         items = items[: args.limit]
 
-    top_k = cfg["retrieval"]["top_k"]
-    threshold = cfg["retrieval"]["relevance_threshold"]
-    method = cfg["retrieval"].get("method", "rerank")
-    query_enhancement = cfg["retrieval"].get("query_enhancement")
-    parent_document = cfg["retrieval"].get("parent_document", False)
-    hype = cfg["retrieval"].get("hype", False)
-    gen_provider = cfg["generation"]["provider"]
-    gen_model = cfg["generation"]["model"]
-    gen_format = cfg["generation"].get("format", ANSWER_FORMAT)
     client = judge_client(cfg["judge"]["provider"], cfg["judge"]["model"])
 
     with connect() as conn:
@@ -236,21 +230,7 @@ def main() -> None:
         conn.commit()
 
         judged = 0
-        for r in evaluate(
-            conn,
-            client,
-            items,
-            top_k,
-            threshold,
-            method,
-            query_enhancement,
-            parent_document,
-            hype,
-            gen_provider,
-            gen_model,
-            gen_prompt,
-            gen_format,
-        ):
+        for r in evaluate(conn, client, items, cfg, gen_prompt):
             conn.execute(
                 """INSERT INTO eval_results
                        (run_id, question_id, question, answer, scores, rationales, cost, latency_ms)

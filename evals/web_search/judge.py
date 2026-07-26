@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parents[2] / ".env")
 
+from evals.schema import load_jsonl
 from rag.clients import openrouter_client
 from rag.config import CONFIG
 from rag.query.web_search_agent import _cited_urls
@@ -247,7 +248,7 @@ def main(tag: str = "") -> None:
     results = data / (f"results_{tag}.jsonl" if tag else "results.jsonl")
     judgments_path = data / (f"judgments_{tag}.jsonl" if tag else "judgments.jsonl")
     client = instructor.from_openai(openrouter_client(), mode=instructor.Mode.TOOLS)
-    rows = [json.loads(line) for line in results.open()]
+    rows = load_jsonl(results)
     judged = {}
     if judgments_path.exists():
         judged = {j["id"]: j for j in map(json.loads, judgments_path.open()) if j}

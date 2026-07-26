@@ -14,7 +14,8 @@ evals/
   eval_set.jsonl         the shared test bank — questions, ideal answers, gold chunk ids
   traces.jsonl           eval traces for viewers/trace_viewer.py
   langfuse_traces.jsonl  production traces for viewers/langfuse_viewer.py
-  schema.py              shared Pydantic row schema
+  schema.py              shared result aggregation (pass_rate)
+  taxonomy.json          the A–F failure taxonomy — drives judge rubrics + labelling legend
   run.py                 one-command run: retrieve → answer → judge, logged to Postgres
   check_regression.py    CI gate: fail a PR if a category's pass rate drops too far
   test_assertions.py     Level-1 deterministic checks (uv run pytest)
@@ -29,7 +30,7 @@ evals/
     data/                  synthetic_questions.jsonl, metrics_log.jsonl
 
   answer/                evaluate the ANSWERING path (retrieval + generation)
-    judge.py               LLM-as-judge, one narrow Opus call per rubric dimension
+    judge.py               LLM-as-judge, one narrow Flash call per rubric dimension
     judge_db.py            same judge, persisted to Postgres (eval_runs + eval_results)
     judge_vs_human.py      judge↔human agreement  →  analysis/judge_metrics.json
     gen_eval.py            fill eval_set.jsonl with draft RAG answers for grading

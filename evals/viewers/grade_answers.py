@@ -14,6 +14,8 @@ import html
 import json
 from pathlib import Path
 
+from evals.schema import load_jsonl
+
 IN_FILE = Path(__file__).parent.parent / "answer" / "data" / "answer_feedback.jsonl"
 OUT_FILE = Path(__file__).parent / "grade_answers.html"
 
@@ -108,7 +110,7 @@ def render_card(row: dict) -> str:
 
 
 def main() -> None:
-    rows = [json.loads(line) for line in IN_FILE.read_text().splitlines() if line.strip()]
+    rows = load_jsonl(IN_FILE)
     cards = "".join(render_card(row) for row in rows)
     header = (
         '<div id="bar"><span id="tally"></span>'

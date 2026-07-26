@@ -32,6 +32,7 @@ from .query.deepagent import resume_deepagent, run_deepagent, stream_deepagent
 from .query.retrieve import (
     HYPE,
     METHOD,
+    NO_ANSWER,
     PARENT_DOCUMENT,
     QUERY_ENHANCEMENT,
     RERANK_DEPTH,
@@ -44,8 +45,6 @@ from .query.web_search_graph_agent import stream_agent
 
 # Cap the one caller-controlled cost lever before it reaches Voyage/Claude.
 MAX_QUESTION_CHARS = 1000
-
-NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
 # Rate limit per client IP. In-memory storage → per-process; point Limiter at Redis
 # (storage_uri=...) to share across workers.
@@ -167,6 +166,32 @@ def _retrieved_meta(hits: list[Hit]) -> list[dict]:
     ]
 
 
+def _gated_retrieve(body: AskRequest, span) -> tuple[str | None, list[Hit]]:
+    """Input rail + coverage gate + retrieval, shared by /ask and /ask/stream.
+    Returns (refusal, hits): a BLOCKED/NO_ANSWER refusal with no hits (span output
+    already set — the caller only shapes it for its transport), or None with the
+    retrieved hits (span retrieval metadata already set)."""
+    if check_input(body.question):
+        span.update(output=BLOCKED)
+        return BLOCKED, []
+    with connect() as conn:
+        ok, gate = covered(conn, body.question)
+        if not ok:
+            span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
+            return NO_ANSWER, []
+        hits = retrieve(
+            conn,
+            body.question,
+            k=body.top_k,
+            method=body.method,
+            query_enhancement=body.query_enhancement,
+            parent_document=body.parent_document,
+            hype=body.hype,
+        )
+    span.update(metadata={"retrieved": _retrieved_meta(hits)})
+    return None, hits
+
+
 # Sync `def`: the Voyage/Claude/psycopg calls block, so FastAPI runs this in a
 # threadpool. `request: Request` is unused by the body but required for slowapi.
 @app.post("/ask")
@@ -175,24 +200,9 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
     with langfuse.start_as_current_observation(
         as_type="span", name="rag-ask", input=body.question
     ) as span:
-        if check_input(body.question):
-            span.update(output=BLOCKED)
-            return AskResponse(answer=BLOCKED, citations=[], sources=[])
-        with connect() as conn:
-            ok, gate = covered(conn, body.question)
-            if not ok:
-                span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                return AskResponse(answer=NO_ANSWER, citations=[], sources=[])
-            hits = retrieve(
-                conn,
-                body.question,
-                k=body.top_k,
-                method=body.method,
-                query_enhancement=body.query_enhancement,
-                parent_document=body.parent_document,
-                hype=body.hype,
-            )
-        span.update(metadata={"retrieved": _retrieved_meta(hits)})
+        refusal, hits = _gated_retrieve(body, span)
+        if refusal:
+            return AskResponse(answer=refusal, citations=[], sources=[])
         text, citations = answer(body.question, hits, model=GEN_MODELS[body.model], fmt=body.format)
         if check_output(body.question, text):
             span.update(output=BLOCKED)
@@ -219,26 +229,10 @@ def ask_stream(request: Request, body: AskRequest) -> StreamingResponse:
         ) as span:
             # Input rail only: tokens stream straight to the client, so a post-hoc
             # output check couldn't unsend them.
-            if check_input(body.question):
-                span.update(output=BLOCKED)
-                yield f"data: {json.dumps({'type': 'text', 'text': BLOCKED})}\n\n"
+            refusal, hits = _gated_retrieve(body, span)
+            if refusal:
+                yield f"data: {json.dumps({'type': 'text', 'text': refusal})}\n\n"
                 return
-            with connect() as conn:
-                ok, gate = covered(conn, body.question)
-                if not ok:
-                    span.update(metadata={"retrieved": _retrieved_meta(gate)}, output=NO_ANSWER)
-                    yield f"data: {json.dumps({'type': 'text', 'text': NO_ANSWER})}\n\n"
-                    return
-                hits = retrieve(
-                    conn,
-                    body.question,
-                    k=body.top_k,
-                    method=body.method,
-                    query_enhancement=body.query_enhancement,
-                    parent_document=body.parent_document,
-                    hype=body.hype,
-                )
-            span.update(metadata={"retrieved": _retrieved_meta(hits)})
             answer_text = []
             for event in answer_stream(
                 body.question, hits, model=GEN_MODELS[body.model], fmt=body.format

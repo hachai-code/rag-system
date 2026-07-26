@@ -9,15 +9,15 @@ import type {
   DeepAgentEvent,
   QAMemory,
   QAMemoryDetail,
-  SourcePassage,
   StreamEvent,
 } from "@/lib/types";
 import { API_URL } from "@/lib/api";
+import { sseEvents } from "@/lib/sse";
 import { AnswerBody } from "./_components/AnswerBody";
 import { CorpusSources } from "./_components/CorpusSources";
-import { Highlight } from "./_components/Highlight";
 import { MemorySidebar } from "./_components/MemorySidebar";
 import { MemoryViewer } from "./_components/MemoryViewer";
+import { SourcePanel } from "./_components/SourcePanel";
 import { TraceStep, type Step } from "./_components/TraceStep";
 import { WebSources } from "./_components/WebSources";
 
@@ -44,7 +44,6 @@ export default function Home() {
   const [answer, setAnswer] = useState("");
   const [citations, setCitations] = useState<Citation[]>([]);
   const [openChip, setOpenChip] = useState<number | null>(null);
-  const [source, setSource] = useState<SourcePassage | null>(null);
   const [loading, setLoading] = useState(false);
   const [format, setFormat] = useState<"prose" | "claims">("prose");
   const [model, setModel] = useState<"pro" | "flash">("pro");
@@ -110,7 +109,6 @@ export default function Home() {
     setAnswer("");
     setCitations([]);
     setOpenChip(null);
-    setSource(null);
     setSteps([]);
     setCorpusSources([]);
     setSubmitted(question.trim());
@@ -137,39 +135,24 @@ export default function Home() {
             setAnswer("Error: this run is gone (server restarted). Ask again.");
             break;
           }
-          const reader = res.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let done = false;
-          while (!done) {
-            const chunk = await reader.read();
-            done = chunk.done;
-            if (!chunk.value) continue;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const frames = buffer.split("\n\n");
-            buffer = frames.pop() ?? "";
-            for (const frame of frames) {
-              const data = frame.replace(/^data: /, "");
-              if (!data) continue;
-              const event: DeepAgentEvent = JSON.parse(data);
-              received += 1;
-              if (event.type === "status") {
-                setSteps((prev) => [
-                  ...prev,
-                  { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
-                ]);
-              } else if (event.type === "result") {
-                // Attach the tool result to the step it belongs to (matched by call_id).
-                setSteps((prev) =>
-                  prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
-                );
-              } else if (event.type === "sources") {
-                setCorpusSources(event.sources);
-              } else if (event.type === "answer") {
-                setAnswer(event.text);
-              } else if (event.type === "error") {
-                setAnswer(`Error: ${event.message}`);
-              }
+          for await (const event of sseEvents<DeepAgentEvent>(res)) {
+            received += 1;
+            if (event.type === "status") {
+              setSteps((prev) => [
+                ...prev,
+                { callId: event.call_id, scope: event.scope, tool: event.tool, label: event.label },
+              ]);
+            } else if (event.type === "result") {
+              // Attach the tool result to the step it belongs to (matched by call_id).
+              setSteps((prev) =>
+                prev.map((s) => (s.callId === event.call_id ? { ...s, result: event.preview } : s)),
+              );
+            } else if (event.type === "sources") {
+              setCorpusSources(event.sources);
+            } else if (event.type === "answer") {
+              setAnswer(event.text);
+            } else if (event.type === "error") {
+              setAnswer(`Error: ${event.message}`);
             }
           }
           break; // the server only closes the stream when the run is done
@@ -192,28 +175,11 @@ export default function Home() {
         body: JSON.stringify({ question, format: fmt, model, top_k: topK }),
       });
 
-      // Read the SSE stream: frames are separated by a blank line, each one a
-      // "data: {json}" line. We buffer bytes and parse whole frames as they arrive.
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-      while (!done) {
-        const chunk = await reader.read();
-        done = chunk.done;
-        if (!chunk.value) continue;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? ""; // keep the trailing partial frame for next read
-        for (const frame of frames) {
-          const data = frame.replace(/^data: /, "");
-          if (!data) continue;
-          const event: StreamEvent = JSON.parse(data);
-          if (event.type === "text") {
-            setAnswer((prev) => prev + event.text);
-          } else {
-            setCitations((prev) => [...prev, event]);
-          }
+      for await (const event of sseEvents<StreamEvent>(res)) {
+        if (event.type === "text") {
+          setAnswer((prev) => prev + event.text);
+        } else {
+          setCitations((prev) => [...prev, event]);
         }
       }
     } catch {
@@ -223,17 +189,11 @@ export default function Home() {
     }
   }
 
-  // Open a citation: fetch the chunk's place in its document and show it. Clicking
-  // the open chip again closes the panel.
-  async function openSource(i: number, chunkId: number) {
-    if (openChip === i) {
-      setOpenChip(null);
-      return;
-    }
-    setOpenChip(i);
-    setSource(null);
-    const res = await fetch(`${API_URL}/source/${chunkId}`);
-    setSource(await res.json());
+  // Open a citation's source panel; clicking the open chip again closes it.
+  // (The second arg stays for AnswerBody's call shape; SourcePanel fetches by
+  // the open citation's chunk_id itself.)
+  function openSource(i: number, _chunkId: number) {
+    setOpenChip((open) => (open === i ? null : i));
   }
 
   return (
@@ -392,31 +352,10 @@ export default function Home() {
           </div>
 
           {openChip !== null && (
-            <div className="mt-4 rounded border border-gray-300 p-4">
-              {source === null ? (
-                <p className="text-sm text-gray-400">Loading source…</p>
-              ) : (
-                <>
-                  <div className="mb-3">
-                    <div className="font-medium">{source.title}</div>
-                    <div className="text-xs text-gray-500">
-                      {source.section} · passage {source.chunk_index + 1} of{" "}
-                      {source.n_chunks}
-                    </div>
-                  </div>
-                  <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
-                    <span className="text-gray-400">{source.before}</span>
-                    {source.before && "\n"}
-                    <Highlight
-                      chunk={source.chunk}
-                      cited={citations[openChip].cited_text}
-                    />
-                    {source.after && "\n"}
-                    <span className="text-gray-400">{source.after}</span>
-                  </div>
-                </>
-              )}
-            </div>
+            <SourcePanel
+              chunkId={citations[openChip].chunk_id}
+              cited={citations[openChip].cited_text}
+            />
           )}
         </section>
       )}

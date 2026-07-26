@@ -11,6 +11,7 @@ Run: uv run python -m evals.answer.gen_eval
 import json
 from pathlib import Path
 
+from evals.schema import load_jsonl
 from rag import answer, search
 from rag.db import connect
 
@@ -18,7 +19,7 @@ EVAL_FILE = Path(__file__).parent.parent / "eval_set.jsonl"
 
 
 def main() -> None:
-    rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
+    rows = load_jsonl(EVAL_FILE)
 
     with connect() as conn:
         for row in rows:

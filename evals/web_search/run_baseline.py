@@ -18,6 +18,7 @@ load_dotenv(Path(__file__).parents[2] / ".env")
 
 from langfuse import get_client
 
+from evals.schema import load_jsonl
 from rag.config import CONFIG
 
 EVAL_SET = Path(__file__).parent / "eval_set.jsonl"
@@ -61,11 +62,9 @@ def langfuse_stats(question: str) -> dict:
 
 def main(ids: set[int] | None = None, tag: str = "", impl: str = "loop") -> None:
     out = Path(__file__).parent / "data" / (f"results_{tag}.jsonl" if tag else "results.jsonl")
-    done = set()
-    if out.exists():
-        done = {json.loads(line)["id"] for line in out.open() if line.strip()}
+    done = {row["id"] for row in load_jsonl(out)}
 
-    for row in (json.loads(line) for line in EVAL_SET.open()):
+    for row in load_jsonl(EVAL_SET):
         if ids is not None and row["id"] not in ids:
             continue
         if row["id"] in done:

@@ -26,20 +26,14 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from evals.answer.judge import NO_ANSWER
+from evals.schema import load_jsonl as load
 from rag import answer, search
 from rag.db import connect
-from rag.query.retrieve import RELEVANCE_THRESHOLD
+from rag.query.retrieve import NO_ANSWER, RELEVANCE_THRESHOLD, no_relevant_hits
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"
 TRACES = HERE / "traces.jsonl"
-
-
-def load(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def pull_trace(conn, question: str) -> dict:
@@ -55,8 +49,7 @@ def pull_trace(conn, question: str) -> dict:
         }
         for h in hits
     ]
-    gated = not hits or hits[0]["distance"] > RELEVANCE_THRESHOLD
-    text = NO_ANSWER if gated else answer(question, hits)[0]
+    text = NO_ANSWER if no_relevant_hits(hits) else answer(question, hits)[0]
     return {"chunks": chunks, "answer": text}
 
 

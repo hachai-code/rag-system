@@ -13,9 +13,9 @@ Run: uv run python -m evals.viewers.grade
 """
 
 import html
-import json
 from pathlib import Path
 
+from evals.schema import load_jsonl
 from rag import search
 from rag.db import connect
 
@@ -117,7 +117,7 @@ def render_card(row: dict, hits: list[dict]) -> str:
 
 
 def main() -> None:
-    rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
+    rows = load_jsonl(EVAL_FILE)
     cards = []
     with connect() as conn:
         for row in rows:

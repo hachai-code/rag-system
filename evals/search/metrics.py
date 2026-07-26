@@ -17,6 +17,7 @@ from pathlib import Path
 
 import psycopg
 
+from evals.schema import load_jsonl
 from rag import hybrid_search, rerank_search, search
 from rag.db import connect
 
@@ -62,7 +63,7 @@ def main() -> None:
         retriever, default_label = search, "naive"
     positional = [a for a in flags if not a.startswith("-")]
     label = positional[0] if positional else default_label
-    rows = [json.loads(line) for line in EVAL_FILE.read_text().splitlines() if line.strip()]
+    rows = load_jsonl(EVAL_FILE)
     graded = [r for r in rows if r.get("relevance_keywords")]
 
     print(f"{'id':>3}  {'category':<11} {'gold':>4} {'hit':>3} {'rank':>4}")
