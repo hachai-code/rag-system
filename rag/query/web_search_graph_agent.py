@@ -27,19 +27,18 @@ from ..clients import OPENROUTER_BASE_URL
 from ..config import CONFIG
 from .web_search_agent import (
     CRITIQUE_PROMPT,
-    DISTILL_OVER_TOKENS,
     MAX_ITERATIONS,
     MAX_SECONDS,
     MAX_TOKENS,
     SYSTEM_PROMPT,
     TOOLS,
     _best_effort_answer,
-    _distill,
-    _encoder,
     _execute_tool,
     _limit_hit,
     _rejected_citations,
     _urls_in,
+    distill_if_long,
+    run_metadata,
 )
 
 # Module-level like the old agent: run_baseline.py patches these per run.
@@ -149,8 +148,8 @@ def run_tools(state: AgentState) -> dict:
             as_type="tool", name=name, input=arguments
         ) as tool_obs:
             result = _execute_tool(name, arguments)
-            if name == "fetch_page" and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS:
-                result, distill_cost = _distill(_client(), state["question"], result)
+            if name == "fetch_page":
+                result, distill_cost = distill_if_long(_client(), state["question"], result)
                 cost += distill_cost
             tool_obs.update(output=result)
         writer(
@@ -249,6 +248,17 @@ def _initial_state(question: str) -> AgentState:
     }
 
 
+def _final_metadata(final: dict) -> dict:
+    """Adapt the graph's final state to the shared run-metadata schema."""
+    return run_metadata(
+        final["iterations"],
+        final["cost_spent"],
+        final["limit"],
+        final["citation_retries"],
+        final["critiqued"],
+    )
+
+
 def run_agent(question: str) -> str:
     """Answer the question by letting the model drive research, within hard limits:
     MAX_ITERATIONS LLM calls, MAX_COST_USD spend, MAX_SECONDS wall time. On a limit
@@ -260,16 +270,7 @@ def run_agent(question: str) -> str:
         # Default recursion_limit is 25 supersteps; a full run needs ~3 per
         # iteration (call_model, run_tools, review).
         final = GRAPH.invoke(state, config={"recursion_limit": 3 * MAX_ITERATIONS + 10})
-        span.update(
-            output=final["answer"],
-            metadata={
-                "iterations": final["iterations"],
-                "cost_usd": round(final["cost_spent"], 4),
-                "limit_hit": final["limit"],
-                "citation_retries": final["citation_retries"],
-                "critiqued": final["critiqued"],
-            },
-        )
+        span.update(output=final["answer"], metadata=_final_metadata(final))
     return final["answer"]
 
 
@@ -290,16 +291,7 @@ def stream_agent(question: str):
                     yield chunk
                 else:
                     final = chunk  # full state after each superstep; keep the last
-            span.update(
-                output=final["answer"],
-                metadata={
-                    "iterations": final["iterations"],
-                    "cost_usd": round(final["cost_spent"], 4),
-                    "limit_hit": final["limit"],
-                    "citation_retries": final["citation_retries"],
-                    "critiqued": final["critiqued"],
-                },
-            )
+            span.update(output=final["answer"], metadata=_final_metadata(final))
             yield {
                 "type": "done",
                 "answer": final["answer"],

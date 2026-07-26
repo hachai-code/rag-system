@@ -42,10 +42,9 @@ from ..config import CONFIG
 from ..db import DB_URL, EMBED_DIM, Hit, connect
 from .retrieve import VOYAGE_MODEL, retrieve
 from .web_search_agent import (
-    DISTILL_OVER_TOKENS,
     _cited_urls,
-    _distill,
-    _encoder,
+    distill_if_long,
+    format_search_results,
 )
 from .web_search_agent import (
     fetch_page as _fetch_page,
@@ -225,7 +224,7 @@ def web_search(query: str, config: RunnableConfig) -> str:
         return _BUDGET_MSG
     try:
         results = _search_web(query)
-        return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results) or "No results."
+        return format_search_results(results) or "No results."
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
 
@@ -240,8 +239,7 @@ def fetch_page(url: str, focus: str, config: RunnableConfig) -> str:
         page = _fetch_page(url)
     except Exception as e:
         return f"Tool error: {type(e).__name__}: {e}"
-    if len(_encoder.encode(page)) > DISTILL_OVER_TOKENS:
-        page, _ = _distill(_distill_client(), focus, page)
+    page, _ = distill_if_long(_distill_client(), focus, page)
     return page
 
 
@@ -445,6 +443,21 @@ def _pending_tool_calls(interrupts) -> list[dict]:
     return pending
 
 
+def _seed_run_state(thread_id: str, question: str, research_budget: int | None) -> None:
+    """Fresh per-run state for one thread: the registry retrieve_corpus fills in, the
+    web-call counter + budget, and the similar-QA context block. The one place that
+    knows the full per-thread state set — _clear_run_state is its inverse."""
+    _registries[thread_id] = {}
+    _web_calls[thread_id] = 0
+    _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
+    _qa_blocks[thread_id], _qa_top_score[thread_id] = _lookup_similar_qa(question)
+
+
+def _clear_run_state(thread_id: str) -> None:
+    for state in (_registries, _web_calls, _budgets, _qa_blocks, _qa_top_score):
+        state.pop(thread_id, None)
+
+
 def run_deepagent(question: str, thread_id: str, research_budget: int | None = None) -> dict:
     """Answer the question with the deep agent, traced as one Langfuse span.
 
@@ -453,10 +466,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
     pauses before external research — `{"status": "awaiting_approval", "thread_id",
     "pending"}`. Resume a paused thread with resume_deepagent()."""
     config = {"configurable": {"thread_id": thread_id}}
-    _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
-    _web_calls[thread_id] = 0
-    _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
-    _qa_blocks[thread_id], _qa_top_score[thread_id] = _lookup_similar_qa(question)
+    _seed_run_state(thread_id, question, research_budget)
     try:
         with get_client().start_as_current_observation(
             as_type="span", name="rag-agent", input=question
@@ -474,11 +484,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
             span.update(output=answer, metadata={"thread_id": thread_id})
         return {"status": "done", "answer": answer, "thread_id": thread_id}
     finally:
-        _registries.pop(thread_id, None)
-        _web_calls.pop(thread_id, None)
-        _budgets.pop(thread_id, None)
-        _qa_blocks.pop(thread_id, None)
-        _qa_top_score.pop(thread_id, None)
+        _clear_run_state(thread_id)
 
 
 def resume_deepagent(thread_id: str, decision: str) -> dict:
@@ -508,10 +514,10 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
             span.update(output=answer, metadata={"thread_id": thread_id})
         return {"status": "done", "answer": answer, "thread_id": thread_id}
     finally:
-        # Same per-run cleanup as run_deepagent — retrieve_corpus refills _registries
-        # during a resumed run, and _web_calls was reseeded above.
-        _registries.pop(thread_id, None)
-        _web_calls.pop(thread_id, None)
+        # Same per-run cleanup as run_deepagent. Resume only reseeds _web_calls (the
+        # budget falls back to config), but clearing the full set is a no-op for
+        # absent keys and can't drift when the state set grows.
+        _clear_run_state(thread_id)
 
 
 def _step_label(name: str, args: dict) -> str:
@@ -557,10 +563,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
     — or `error` if the run blew up. `research_budget` caps web calls (0 = unlimited);
     defaults to config. Mirrors stream_agent()."""
     config = {"configurable": {"thread_id": thread_id}}
-    _registries[thread_id] = {}  # fresh per-run registry retrieve_corpus fills in
-    _web_calls[thread_id] = 0  # fresh research budget for this run
-    _budgets[thread_id] = RESEARCH_BUDGET if research_budget is None else research_budget
-    _qa_blocks[thread_id], _qa_top_score[thread_id] = _lookup_similar_qa(question)
+    _seed_run_state(thread_id, question, research_budget)
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -612,11 +615,7 @@ def stream_deepagent(question: str, thread_id: str, research_budget: int | None 
         except Exception as e:
             yield {"type": "error", "message": str(e)}
         finally:
-            _registries.pop(thread_id, None)
-            _web_calls.pop(thread_id, None)
-            _budgets.pop(thread_id, None)
-            _qa_blocks.pop(thread_id, None)
-            _qa_top_score.pop(thread_id, None)
+            _clear_run_state(thread_id)
 
 
 if __name__ == "__main__":

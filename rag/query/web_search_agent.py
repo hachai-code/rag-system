@@ -188,7 +188,7 @@ def _execute_tool(name: str, arguments: str) -> str:
             results = search_web(args["query"])
             if not results:
                 return f"No results found for {args['query']!r}. Try a different query."
-            return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+            return format_search_results(results)
         if name == "fetch_page":
             return fetch_page(args["url"])
         return (
@@ -225,6 +225,32 @@ def _distill(client: OpenAI, question: str, page: str) -> tuple[str, float]:
         return text, getattr(resp.usage, "cost", None) or 0.0
     except Exception:
         return page, 0.0
+
+
+def distill_if_long(client: OpenAI, question: str, page: str) -> tuple[str, float]:
+    """The one distillation rule all agents share: fetched pages over
+    DISTILL_OVER_TOKENS get compressed to what's relevant to the question; shorter
+    pages pass through raw at zero cost. Returns (text, cost)."""
+    if len(_encoder.encode(page)) > DISTILL_OVER_TOKENS:
+        return _distill(client, question, page)
+    return page, 0.0
+
+
+def format_search_results(results) -> str:
+    """The search-result wire format the models read: title (url) + snippet per hit."""
+    return "\n\n".join(f"{r.title} ({r.url})\n{r.snippet}" for r in results)
+
+
+def run_metadata(iterations, cost_spent, limit_hit, citation_retries, critiqued) -> dict:
+    """The Langfuse span metadata schema for one agent run — one home for the key
+    names, shared by the loop and graph agents (dashboards read these)."""
+    return {
+        "iterations": iterations,
+        "cost_usd": round(cost_spent, 4),
+        "limit_hit": limit_hit,
+        "citation_retries": citation_retries,
+        "critiqued": critiqued,
+    }
 
 
 # --- State ---------------------------------------------------------------------
@@ -412,11 +438,8 @@ def run_agent(question: str) -> str:
                     as_type="tool", name=call.function.name, input=call.function.arguments
                 ) as tool_obs:
                     result = _execute_tool(call.function.name, call.function.arguments)
-                    if (
-                        call.function.name == "fetch_page"
-                        and len(_encoder.encode(result)) > DISTILL_OVER_TOKENS
-                    ):
-                        result, distill_cost = _distill(client, state.question, result)
+                    if call.function.name == "fetch_page":
+                        result, distill_cost = distill_if_long(client, state.question, result)
                         state.cost_spent += distill_cost
                     tool_obs.update(output=result)
                 state.record(
@@ -426,13 +449,9 @@ def run_agent(question: str) -> str:
 
         span.update(
             output=answer,
-            metadata={
-                "iterations": state.iterations,
-                "cost_usd": round(state.cost_spent, 4),
-                "limit_hit": limit,
-                "citation_retries": state.citation_retries,
-                "critiqued": critiqued,
-            },
+            metadata=run_metadata(
+                state.iterations, state.cost_spent, limit, state.citation_retries, critiqued
+            ),
         )
     return answer
 

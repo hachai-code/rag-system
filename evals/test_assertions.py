@@ -334,3 +334,25 @@ def test_final_answer_falls_back_to_last_ai_text():
         )
         == "prose answer"
     )
+
+
+def test_grading_sheet_embeds_rows_grades_and_storage_key():
+    import json
+
+    from evals.viewers._sheet import grade_radios, render_grading_sheet
+
+    rows = [{"id": 1, "question": "q?"}]
+    page = render_grading_sheet(
+        rows=rows,
+        cards=f'<section class="card">{grade_radios(1, ["up", "down"])}</section>',
+        grades=["up", "down"],
+        storage_key="test_grades",
+        download_name="out.jsonl",
+        title="t",
+        intro="i",
+    )
+    # The pieces the browser script needs: radios per grade, the per-sheet
+    # localStorage key, and the original rows for download-back-to-JSONL.
+    assert 'name="grade-1"' in page and 'value="up"' in page and 'value="down"' in page
+    assert '"test_grades"' in page and "localStorage" in page
+    assert json.dumps(rows, ensure_ascii=False) in page
