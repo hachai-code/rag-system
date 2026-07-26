@@ -1,23 +1,32 @@
 """Stage 3: embed chunks with Voyage and store them in pgvector.
 
-Functions only — `rag.pipeline.build_index` runs the full ingest -> chunk -> embed
-sequence. Storing is idempotent: it replaces a document's chunks rather than
-duplicating them.
+`build_index` runs the full ingest -> chunk -> embed -> store sequence; `populate_hype` is
+a separate, opt-in pass that indexes hypothetical questions for HyPE retrieval. Storing is
+idempotent: it replaces a document's chunks rather than duplicating them.
+
+    uv run python -m rag.indexing.index build   # ingest -> chunk -> embed -> store
+    uv run python -m rag.indexing.index hype    # populate chunk_questions (after build)
+
+Both need the Postgres container up and VOYAGE_API_KEY.
 """
 
+import argparse
 import datetime
+import logging
+import os
 import time
 
 import psycopg
 import voyageai
 from ai_utils import UsageTracker
+from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from ..config import CONFIG
-from ..db import EMBED_DIM
+from ..db import DB_URL, EMBED_DIM
 from ..query.answer import complete
-from .chunk import Chunk
-from .ingest import Document
+from .chunk import Chunk, chunk_corpus
+from .ingest import CORPUS_ROOT, Document, load_corpus
 
 VOYAGE_MODEL = CONFIG.voyage_model
 BATCH_SIZE = 128  # texts per request; limits are 1000 texts / 320K tokens
@@ -121,6 +130,27 @@ def store_chunks(
     )
 
 
+def build_index() -> None:
+    documents = load_corpus(CORPUS_ROOT)
+    chunks = chunk_corpus(documents)
+    print(f"Embedding {len(chunks)} chunks with {VOYAGE_MODEL} ...")
+
+    client = voyageai.Client()
+    tracker = UsageTracker()
+    # Contextual prefix (section + title) on each chunk's embedded text — improves
+    # retrieval. The stored content stays raw.
+    texts = [f"{c.section} — {c.title[:60]}\n\n{c.content}" for c in chunks]
+    embeddings = embed_batches(client, texts, tracker)
+
+    with psycopg.connect(DB_URL) as conn:
+        register_vector(conn)
+        doc_ids = upsert_documents(conn, documents)
+        store_chunks(conn, chunks, embeddings, doc_ids)
+
+    print(f"Stored {len(chunks)} chunks across {len(documents)} documents.")
+    print(f"Voyage usage: {tracker.summary()}")
+
+
 HYPE_PROMPT = (
     "Write {n} distinct questions that this passage from the innerdance corpus directly "
     "answers — the kind of questions a reader would ask. One per line, no numbering or "
@@ -172,37 +202,44 @@ def populate_hype(
     return len(questions)
 
 
-def main() -> None:
-    """Populate chunk_questions for HyPE retrieval. Run after the main index is built:
-
-    uv run python -m rag.indexing.embed            # whole corpus
-    uv run python -m rag.indexing.embed --limit 20 # first 20 chunks (testing)
-    """
-    import argparse
-
-    from pgvector.psycopg import register_vector
-
-    from ..db import DB_URL
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, help="only the first N chunks (quick test)")
-    args = ap.parse_args()
-
+def build_hype_index(limit: int | None = None) -> None:
+    """Populate chunk_questions for HyPE retrieval. Run after the main index is built."""
     client = voyageai.Client()
     tracker = UsageTracker()
     with psycopg.connect(DB_URL) as conn:
         register_vector(conn)
-        if args.limit:
+        if limit:
             chunk_ids = [
                 r[0]
                 for r in conn.execute(
-                    "SELECT id FROM chunks ORDER BY id LIMIT %s", (args.limit,)
+                    "SELECT id FROM chunks ORDER BY id LIMIT %s", (limit,)
                 ).fetchall()
             ]
         else:
             chunk_ids = None
         n = populate_hype(conn, client, tracker, chunk_ids)
     print(f"Stored {n} hypothetical questions. Voyage usage: {tracker.summary()}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Build the index, or the HyPE question index.")
+    stages = ap.add_subparsers(dest="stage", required=True)
+    stages.add_parser("build", help="ingest -> chunk -> embed -> store the whole corpus")
+    hype = stages.add_parser("hype", help="populate chunk_questions (after build)")
+    hype.add_argument("--limit", type=int, help="only the first N chunks (quick test)")
+    args = ap.parse_args()
+
+    if not os.environ.get("VOYAGE_API_KEY"):
+        raise SystemExit("VOYAGE_API_KEY is not set. Add it to .env or export it.")
+
+    # Surface ai_utils' per-call cost logs while keeping third-party libs quiet.
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    logging.getLogger("ai_utils").setLevel(logging.INFO)
+
+    if args.stage == "build":
+        build_index()
+    else:
+        build_hype_index(args.limit)
 
 
 if __name__ == "__main__":

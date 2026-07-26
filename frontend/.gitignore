@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Generated intermediate for gen:types (types.ts is committed; this is reproducible)
+openapi.json

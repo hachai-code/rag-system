@@ -24,7 +24,7 @@ uv run pytest                              # unit assertions (fast, no DB/networ
 uv run ruff check . && uv run ruff format .  # lint + format (CI enforces both)
 uv run fastapi dev rag/app.py              # serve the API on :8000
 uv run python -m db.migrate                # apply pending schema migrations
-uv run python -m rag.pipeline              # rebuild the index (costs Voyage credits)
+uv run python -m rag.indexing.index build  # rebuild the index (costs Voyage credits)
 uv run python -m evals.run --config evals/configs/baseline.json  # full eval (costs LLM credits)
 ```
 
@@ -37,10 +37,10 @@ uv run python -m evals.run --config evals/configs/baseline.json  # full eval (co
   history; don't point at the README from inline comments (one pointer per module
   docstring is enough). DO comment the genuinely unintuitive: non-obvious
   invariants, workarounds for external bugs, deliberate trade-offs.
-- **No import-time side effects.** Clients, DB connections, and compiled agents
-  are built lazily in cached factories (`rag/clients.py`, `deepagent._agent()`).
-  `import rag.app` must succeed with no API keys, no `.env`, no Postgres — CI
-  relies on this.
+- **No import-time side effects.** Clients, DB connections, and agents are built
+  lazily in cached factories (`rag/clients.py`, `query/agent.py`'s `web_agent()` /
+  `corpus_agent()`). `import rag.app` must succeed with no API keys, no `.env`, no
+  Postgres — CI relies on this.
 - **Env access:** `os.environ[key]` for required secrets (fail loud at first use);
   `.get(key, default)` only where a default is legitimate (`DATABASE_URL`,
   `FRONTEND_ORIGIN`). Document new vars in `.env.example`.
@@ -63,13 +63,18 @@ prompts, run the eval and compare against the previous run before merging.
 
 - `EMBED_DIM` (in `rag/db.py`) must match the `VECTOR(1024)` columns in
   `db/migrations/` — changing it means a migration plus a full re-embed.
-- Both web-search agents are kept deliberately: `web_search_graph_agent.py`
-  serves `/agent/stream`; `web_search_agent.py` is the eval baseline
-  (`evals/web_search/run_baseline.py --impl loop`) and home of the shared web
-  tooling. Don't delete either without an eval verdict.
+- The agent tier is two Pydantic AI agents over one shared toolset
+  (`query/tools.py`): `web_agent()` serves `/agent/stream` and the eval baseline
+  (`evals/web_search/run_baseline.py --impl web_agent`); `corpus_agent()` serves
+  `/ask/agent*` and reaches the web only through its `research_point` tool
+  (agent-as-tool). Per-run state rides on Pydantic AI `deps`, never module globals.
 - `db.migrate` and the app both resolve `DATABASE_URL` through `.env` — with a
   production URL there, migrations run against production.
 - `agent_runs` in `rag/app.py` is an in-memory, single-process store; SSE replay
   breaks across restarts/workers (marked `ponytail:`).
-- The first `/ask/agent` request pays the one-time deep-agent build
-  (checkpointer setup + compile).
+- The first `/ask/agent` request pays the one-time agent build (`lru_cache`d
+  factory). Tests that swap in a `TestModel` must `cache_clear()` first, or a
+  cached real agent gets reused and makes a live call.
+- HITL is stop-the-world: the run ends returning pending approvals and a separate
+  later request resumes it, so the paused history lives in `agent_threads`. A
+  durable-execution backend would not remove that between-request state.

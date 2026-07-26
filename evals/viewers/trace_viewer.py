@@ -27,9 +27,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from evals.schema import load_jsonl as load
-from rag import answer, search
 from rag.db import connect
-from rag.query.retrieve import NO_ANSWER, RELEVANCE_THRESHOLD, no_relevant_hits
+from rag.query.gate import ask_gate
+from rag.query.retrieve import RELEVANCE_THRESHOLD
 
 HERE = Path(__file__).parent
 QUESTIONS = HERE.parent / "answer" / "data" / "rag_system_human_eval.jsonl"
@@ -37,20 +37,20 @@ TRACES = HERE / "traces.jsonl"
 
 
 def pull_trace(conn, question: str) -> dict:
-    """One trace from the live pipeline: the retrieved chunks plus the answer (or the
-    refusal the relevance gate would return, so a refused query is reviewable too)."""
-    hits = search(conn, question)
+    """One trace from the live pipeline, via the shared ask_gate: the chunks that produced
+    the answer plus the answer itself (or the refusal the relevance gate returns, so a
+    refused query is reviewable too). Rerank-fused hits can carry no vector distance."""
+    result = ask_gate(conn, question)
     chunks = [
         {
             "title": h["title"],
             "source": h["source"],
-            "distance": round(float(h["distance"]), 4),
+            "distance": round(float(h["distance"]), 4) if h.get("distance") is not None else None,
             "content": h["content"],
         }
-        for h in hits
+        for h in result.hits
     ]
-    text = NO_ANSWER if no_relevant_hits(hits) else answer(question, hits)[0]
-    return {"chunks": chunks, "answer": text}
+    return {"chunks": chunks, "answer": result.answer}
 
 
 def pull() -> None:

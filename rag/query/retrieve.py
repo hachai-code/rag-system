@@ -29,9 +29,6 @@ N_VARIANTS = 4  # multi-query paraphrases fused with the original question
 
 # Distance beyond which the corpus is treated as not covering the question.
 RELEVANCE_THRESHOLD = CONFIG.relevance_threshold
-# The refusal served when the coverage gate fails — one string shared by the API and
-# the evals (judges match on it to spot refusals, so prod and eval must never drift).
-NO_ANSWER = "I don't have information on that in the innerdance corpus."
 
 # Reciprocal Rank Fusion: candidates pulled per retriever, and the paper's k=60.
 FUSE_DEPTH = CONFIG.fuse_depth
@@ -46,10 +43,6 @@ RERANK_DEPTH = CONFIG.rerank_depth
 
 # Chunks of surrounding context to show on each side of a cited chunk (click-through).
 SOURCE_WINDOW = CONFIG.source_window
-
-# The Hit projection (db.Hit) every retriever selects; queries append their own
-# score column (cosine distance or ts_rank) and FROM/JOIN clauses.
-HIT_COLS = "c.id, d.title, d.source, c.content"
 
 
 @lru_cache(maxsize=256)
@@ -66,8 +59,8 @@ def search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list[Hit]
     """Return the k chunks most similar to the question, nearest first."""
     embedding = embed_query(question)
     return conn.execute(
-        f"""
-        SELECT {HIT_COLS},
+        """
+        SELECT c.id, d.title, d.source, c.content,
                c.embedding <=> %(emb)s::vector AS distance
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
@@ -101,13 +94,13 @@ def keyword_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> l
     websearch_to_tsquery ANDs every term (too strict for a full question), so we swap
     & for | to OR them — any overlap counts and ts_rank orders by match quality."""
     return conn.execute(
-        f"""
+        """
         WITH q AS (
             SELECT replace(
                 websearch_to_tsquery('english', %(question)s)::text, '&', '|'
             )::tsquery AS tsq
         )
-        SELECT {HIT_COLS},
+        SELECT c.id, d.title, d.source, c.content,
                ts_rank(c.content_tsv, q.tsq) AS rank
         FROM chunks c
         JOIN documents d ON d.id = c.document_id, q
@@ -205,8 +198,8 @@ def hype_search(conn: psycopg.Connection, question: str, k: int = TOP_K) -> list
     hypothetical question."""
     embedding = embed_query(question)
     hits = conn.execute(
-        f"""
-        SELECT {HIT_COLS},
+        """
+        SELECT c.id, d.title, d.source, c.content,
                cq.embedding <=> %(emb)s::vector AS distance
         FROM chunk_questions cq
         JOIN chunks c ON c.id = cq.chunk_id
@@ -276,7 +269,7 @@ def expand_to_parent(
         ).fetchone()
         lo, hi = _parent_range(target["chunk_index"], window)
         rows = conn.execute(
-            f"""SELECT {HIT_COLS}
+            """SELECT c.id, d.title, d.source, c.content
                FROM chunks c JOIN documents d ON d.id = c.document_id
                WHERE c.document_id = %s AND c.chunk_index BETWEEN %s AND %s
                ORDER BY c.chunk_index""",
@@ -371,69 +364,3 @@ def _retrieve(
     if parent_document:
         hits = expand_to_parent(conn, hits)
     return hits
-
-
-def _overlap(prefix_lines: list[str], next_lines: list[str]) -> int:
-    """How many trailing lines of prefix_lines equal the leading lines of next_lines.
-
-    Adjacent chunks share a CHUNK_OVERLAP-sized run of whole lines (see chunk.py)."""
-    for k in range(min(len(prefix_lines), len(next_lines)), 0, -1):
-        if prefix_lines[-k:] == next_lines[:k]:
-            return k
-    return 0
-
-
-def _stitch(rows: list[Hit], target_index: int) -> tuple[str, str, str]:
-    """Join consecutive chunks into (before, chunk, after), dropping overlap.
-
-    The target chunk is kept whole so a citation's quote stays findable inside it."""
-    before: list[str] = []
-    chunk: list[str] = []
-    after: list[str] = []
-    for row in rows:
-        lines = row["content"].split("\n")
-        if row["chunk_index"] < target_index:
-            before.extend(lines[_overlap(before, lines) :])
-        elif row["chunk_index"] == target_index:
-            chunk = lines
-            del before[len(before) - _overlap(before, lines) :]  # trim before's tail
-        else:
-            after.extend(lines[_overlap(chunk + after, lines) :])
-    return "\n".join(before), "\n".join(chunk), "\n".join(after)
-
-
-def source_passage(conn: psycopg.Connection, chunk_id: int, window: int = SOURCE_WINDOW) -> dict:
-    """Reconstruct where a cited chunk sits in its document, for click-through.
-
-    Returns the chunk stitched back with `window` chunks of context on each side, plus
-    the document title, the chunk's section (nearest heading, or the document's), and
-    its position."""
-    target = conn.execute(
-        "SELECT document_id, chunk_index FROM chunks WHERE id = %s", (chunk_id,)
-    ).fetchone()
-    doc = conn.execute(
-        "SELECT title, section FROM documents WHERE id = %s", (target["document_id"],)
-    ).fetchone()
-    n_chunks = conn.execute(
-        "SELECT count(*) AS n FROM chunks WHERE document_id = %s", (target["document_id"],)
-    ).fetchone()["n"]
-    lo, hi = _parent_range(target["chunk_index"], window)
-    rows = conn.execute(
-        """SELECT chunk_index, content, metadata->>'heading' AS heading
-           FROM chunks
-           WHERE document_id = %s AND chunk_index BETWEEN %s AND %s
-           ORDER BY chunk_index""",
-        (target["document_id"], lo, hi),
-    ).fetchall()
-
-    before, chunk, after = _stitch(rows, target["chunk_index"])
-    heading = next((r["heading"] for r in rows if r["chunk_index"] == target["chunk_index"]), None)
-    return {
-        "title": doc["title"],
-        "section": heading or doc["section"],
-        "chunk_index": target["chunk_index"],
-        "n_chunks": n_chunks,
-        "before": before,
-        "chunk": chunk,
-        "after": after,
-    }

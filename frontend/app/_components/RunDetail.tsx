@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { EvalRunDetail } from "@/lib/types";
+// Aliased: the generated name collides with this component.
+import type { RunDetail as EvalRunDetail } from "@/lib/types";
 import { API_URL } from "@/lib/api";
 
 // Drill-down for one eval run: every judged question with its per-dimension
