@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import Langfuse, get_client
 from langfuse.span_filter import is_default_export_span
@@ -25,6 +25,14 @@ from sse_starlette import EventSourceResponse, JSONServerSentEvent
 
 from evals.api import router as evals_router
 
+from .auth import (
+    User,
+    UserCreate,
+    UserRead,
+    auth_backend,
+    current_active_user,
+    fastapi_users,
+)
 from .db import Hit, connect
 from .guardrails import BLOCKED, check_input, check_output
 from .query.agent import resume_deepagent, run_deepagent, stream_agent, stream_deepagent
@@ -62,7 +70,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(evals_router)
+# Auth: JWT bearer login + invite-code-gated registration. The frontend sends the token
+# as `Authorization: Bearer` on every request; current_active_user gates the data routes.
+app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"])
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"]
+)
+
+# Every data route requires a logged-in user.
+app.include_router(evals_router, dependencies=[Depends(current_active_user)])
 
 # Langfuse tracing: with the LANGFUSE_* keys set, each /ask is one trace; the
 # generation call is auto-captured by the active provider's instrumentor.
@@ -202,7 +218,9 @@ def _retrieved_meta(hits: list[Hit]) -> list[dict]:
 # threadpool. `request: Request` is unused by the body but required for slowapi.
 @app.post("/ask")
 @limiter.limit(RATE_LIMIT)
-def ask(request: Request, body: AskRequest) -> AskResponse:
+def ask(
+    request: Request, body: AskRequest, user: User = Depends(current_active_user)
+) -> AskResponse:
     with langfuse.start_as_current_observation(
         as_type="span", name="rag-ask", input=body.question
     ) as span:
@@ -242,7 +260,9 @@ def ask(request: Request, body: AskRequest) -> AskResponse:
 # Server-Sent Events: `text` events stream in, then one `citation` event per source.
 @app.post("/ask/stream", responses={200: {"model": StreamEvent, "description": "SSE stream"}})
 @limiter.limit(RATE_LIMIT)
-def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
+def ask_stream(
+    request: Request, body: AskRequest, user: User = Depends(current_active_user)
+) -> EventSourceResponse:
     # The span lives inside the generator so the streamed generation nests under it.
     def events():
         with langfuse.start_as_current_observation(
@@ -289,7 +309,9 @@ class AgentRequest(BaseModel):
 # one done (or error) event.
 @app.post("/agent/stream")
 @limiter.limit(RATE_LIMIT)
-def agent_stream(request: Request, body: AgentRequest) -> EventSourceResponse:
+def agent_stream(
+    request: Request, body: AgentRequest, user: User = Depends(current_active_user)
+) -> EventSourceResponse:
     def events():
         if check_input(body.question):
             yield {"type": "error", "message": BLOCKED}
@@ -394,10 +416,12 @@ class DeepAgentEvent(RootModel):
 # flow. The run is traced (span lives in deepagent.run_deepagent).
 @app.post("/ask/agent")
 @limiter.limit(RATE_LIMIT)
-def ask_deepagent(request: Request, body: DeepAgentRequest) -> DeepAgentResponse | AwaitingApproval:
+def ask_deepagent(
+    request: Request, body: DeepAgentRequest, user: User = Depends(current_active_user)
+) -> DeepAgentResponse | AwaitingApproval:
     if check_input(body.question):
         return DeepAgentResponse(answer=BLOCKED, thread_id=body.thread_id)
-    result = run_deepagent(body.question, body.thread_id, body.research_budget)
+    result = run_deepagent(body.question, body.thread_id, user.id, body.research_budget)
     return _agent_result(body.question, result)
 
 
@@ -415,11 +439,11 @@ def _agent_result(question: str, result: dict) -> DeepAgentResponse | AwaitingAp
 @app.post("/ask/agent/resume")
 @limiter.limit(RATE_LIMIT)
 def resume_deepagent_endpoint(
-    request: Request, body: ResumeRequest
+    request: Request, body: ResumeRequest, user: User = Depends(current_active_user)
 ) -> DeepAgentResponse | AwaitingApproval:
     # No new question to input-check here; the resumed run's answer still gets the
     # output rail (empty question — self_check_output only reads the bot message).
-    result = resume_deepagent(body.thread_id, body.decision)
+    result = resume_deepagent(body.thread_id, body.decision, user.id)
     return _agent_result("", result)
 
 
@@ -439,13 +463,15 @@ class AgentRunStarted(BaseModel):
 
 @app.post("/ask/agent/run")
 @limiter.limit(RATE_LIMIT)
-def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunStarted:
+def start_deepagent_run(
+    request: Request, body: DeepAgentRequest, user: User = Depends(current_active_user)
+) -> AgentRunStarted:
     for run_id, run in list(agent_runs.items()):  # prune finished runs older than 1h
         if run["done"] and time.monotonic() - run["ended_at"] > 3600:
             agent_runs.pop(run_id, None)  # pop, not del: concurrent requests both prune
 
     run_id = uuid.uuid4().hex
-    run = {"events": [], "done": False, "ended_at": None}
+    run = {"events": [], "done": False, "ended_at": None, "user_id": user.id}
     agent_runs[run_id] = run
 
     def work():
@@ -453,7 +479,9 @@ def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunSta
             if check_input(body.question):
                 run["events"].append({"type": "error", "message": BLOCKED})
                 return
-            for event in stream_deepagent(body.question, body.thread_id, body.research_budget):
+            for event in stream_deepagent(
+                body.question, body.thread_id, user.id, body.research_budget
+            ):
                 run["events"].append(event)
         except Exception as e:
             run["events"].append({"type": "error", "message": str(e)})
@@ -471,9 +499,14 @@ def start_deepagent_run(request: Request, body: DeepAgentRequest) -> AgentRunSta
     responses={200: {"model": DeepAgentEvent, "description": "SSE stream"}},
 )
 @limiter.limit(RATE_LIMIT)
-def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> EventSourceResponse:
+def deepagent_run_events(
+    request: Request,
+    run_id: str,
+    after: int = 0,
+    user: User = Depends(current_active_user),
+) -> EventSourceResponse:
     run = agent_runs.get(run_id)
-    if run is None:
+    if run is None or run["user_id"] != user.id:
         raise HTTPException(404, "unknown run (finished long ago, or the server restarted)")
 
     def events():
@@ -492,7 +525,9 @@ def deepagent_run_events(request: Request, run_id: str, after: int = 0) -> Event
 # The chunk a citation points at, reconstructed in its place for the frontend.
 @app.get("/source/{chunk_id}")
 @limiter.limit(RATE_LIMIT)
-def source(request: Request, chunk_id: int) -> SourcePassage:
+def source(
+    request: Request, chunk_id: int, user: User = Depends(current_active_user)
+) -> SourcePassage:
     with connect() as conn:
         return SourcePassage(**source_passage(conn, chunk_id))
 
@@ -514,16 +549,18 @@ class QAMemoryDetail(QAMemory):
 # read-only.
 @app.get("/qa")
 @limiter.limit(RATE_LIMIT)
-def qa_memories(request: Request) -> list[QAMemory]:
+def qa_memories(request: Request, user: User = Depends(current_active_user)) -> list[QAMemory]:
     with connect() as conn:
-        return [QAMemory(**row) for row in list_memories(conn)]
+        return [QAMemory(**row) for row in list_memories(conn, user.id)]
 
 
 @app.get("/qa/{key}")
 @limiter.limit(RATE_LIMIT)
-def qa_memory(request: Request, key: str) -> QAMemoryDetail:
+def qa_memory(
+    request: Request, key: str, user: User = Depends(current_active_user)
+) -> QAMemoryDetail:
     with connect() as conn:
-        record = get_memory(conn, key)
+        record = get_memory(conn, key, user.id)
     if record is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return QAMemoryDetail(**record)

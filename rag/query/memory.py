@@ -9,7 +9,7 @@ questions and query questions share one space (Voyage's query/document asymmetry
 useful for question-to-question matching). Table lives in db/migrations/0004.
 """
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -31,18 +31,22 @@ def _embed(text: str) -> list[float]:
     )
 
 
-def lookup_similar_qa(conn: psycopg.Connection, question: str, limit: int = 3) -> tuple[str, float]:
+def lookup_similar_qa(
+    conn: psycopg.Connection, question: str, user_id: UUID, limit: int = 3
+) -> tuple[str, float]:
     """(formatted top-N similar past Q&As, top cosine similarity) — ("", 0.0) when the
-    cache has nothing. The block feeds the corpus agent's prompt; the top score gates the
-    end-of-run cache write in save_qa_record (skip near-duplicates)."""
+    cache has nothing. Scoped to the asking user's own cache. The block feeds the corpus
+    agent's prompt; the top score gates the end-of-run cache write in save_qa_record
+    (skip near-duplicates)."""
     rows = conn.execute(
         """
         SELECT value, 1 - (embedding <=> %(emb)s::vector) AS score
         FROM qa_memory
+        WHERE user_id = %(uid)s
         ORDER BY embedding <=> %(emb)s::vector
         LIMIT %(limit)s
         """,
-        {"emb": _embed(question), "limit": limit},
+        {"emb": _embed(question), "uid": user_id, "limit": limit},
     ).fetchall()
     if not rows:
         return "", 0.0
@@ -62,10 +66,11 @@ def save_qa_record(
     corpus_sources: list[dict],
     web_urls: list[str],
     top_score: float,
+    user_id: UUID,
 ) -> None:
-    """One Q&A cache record per completed run, semantically indexed on the question.
-    Skipped when the run-start lookup found a near-duplicate cached question: the answer
-    leaned on that record, so writing it again would only duplicate."""
+    """One Q&A cache record per completed run, owned by `user_id` and semantically indexed
+    on the question. Skipped when the run-start lookup found a near-duplicate cached
+    question: the answer leaned on that record, so writing it again would only duplicate."""
     if top_score >= QA_DEDUP_SCORE:
         return
     value = {
@@ -76,25 +81,29 @@ def save_qa_record(
         "research_files": {},  # the virtual FS is gone; findings return in-band now
     }
     conn.execute(
-        "INSERT INTO qa_memory (key, question, value, embedding) VALUES (%s, %s, %s, %s::vector)",
-        (uuid4().hex, question, psycopg.types.json.Jsonb(value), _embed(question)),
+        "INSERT INTO qa_memory (key, question, value, embedding, user_id)"
+        " VALUES (%s, %s, %s, %s::vector, %s)",
+        (uuid4().hex, question, psycopg.types.json.Jsonb(value), _embed(question), user_id),
     )
     conn.commit()
 
 
-def list_memories(conn: psycopg.Connection, limit: int = 200) -> list[dict]:
-    """The stored Q&A memories, newest first — the /qa list view."""
+def list_memories(conn: psycopg.Connection, user_id: UUID, limit: int = 200) -> list[dict]:
+    """The user's own stored Q&A memories, newest first — the /qa list view."""
     return conn.execute(
-        "SELECT key, question, created_at FROM qa_memory ORDER BY created_at DESC LIMIT %s",
-        (limit,),
+        "SELECT key, question, created_at FROM qa_memory"
+        " WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+        (user_id, limit),
         # ponytail: hard cap, paginate if the cache outgrows it
     ).fetchall()
 
 
-def get_memory(conn: psycopg.Connection, key: str) -> dict | None:
-    """One stored Q&A memory in full — the /qa/{key} detail view. None when unknown."""
+def get_memory(conn: psycopg.Connection, key: str, user_id: UUID) -> dict | None:
+    """One of the user's stored Q&A memories in full — the /qa/{key} detail view. None when
+    unknown or owned by someone else."""
     row = conn.execute(
-        "SELECT question, value, created_at FROM qa_memory WHERE key = %s", (key,)
+        "SELECT question, value, created_at FROM qa_memory WHERE key = %s AND user_id = %s",
+        (key, user_id),
     ).fetchone()
     if row is None:
         return None

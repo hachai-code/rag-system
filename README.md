@@ -43,7 +43,9 @@ Inspect a stage without embedding: `uv run python -m rag.indexing.ingest` (corpu
 
 Env vars (`.env`): `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`, optional `OPENROUTER_API_KEY`
 (alternate provider), `DATABASE_URL` (defaults to the local docker container),
-`FRONTEND_ORIGIN`, and the `LANGFUSE_*` keys for tracing.
+`FRONTEND_ORIGIN`, the `LANGFUSE_*` keys for tracing, and for auth: `SECRET` (JWT signing
+key — set a real random value in production, tokens are forgeable without it) and
+`SIGNUP_INVITE_CODE` (the code new users need to register).
 
 ## Pipeline order (build the index)
 
@@ -127,6 +129,13 @@ retrieval sends a fixed `TOP_K` chunks, and `MAX_TOKENS` caps the output.
   `citation` event per source.
 - `GET /source/{chunk_id}` — the cited chunk reconstructed in place (`before`/`chunk`/
   `after`) for click-through highlighting in the frontend.
+
+**Auth.** Every data endpoint requires a logged-in user (`Authorization: Bearer <token>`).
+`POST /auth/register` (`{email, password, invite_code}`, gated by `SIGNUP_INVITE_CODE`)
+creates an account; `POST /auth/jwt/login` (form `username`/`password`) returns the token.
+Each user's research threads and Q&A memory are private to them (`user_id` on
+`agent_threads`/`qa_memory`); the corpus is shared. Identity is fastapi-users over async
+SQLAlchemy in `rag/auth.py` — the only async-DB corner of an otherwise sync-psycopg app.
 
 Requests are rate-limited per client IP (`10/minute`, in-memory → per-process). CORS allows
 the frontend origin (`FRONTEND_ORIGIN`). With the `LANGFUSE_*` keys set, each request is one
