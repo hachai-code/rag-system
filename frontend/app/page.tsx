@@ -9,7 +9,7 @@ import type {
   QAMemoryDetail,
   StreamEvent,
 } from "@/lib/types";
-import { API_URL, getJSON } from "@/lib/api";
+import { apiFetch, getJSON } from "@/lib/api";
 import { sseEvents } from "@/lib/sse";
 import { AnswerBody } from "./_components/AnswerBody";
 import { DeepAnswer } from "./_components/DeepAnswer";
@@ -115,7 +115,7 @@ export default function Home() {
     // backgrounds the tab and the connection dies, we reconnect from where we left
     // off once the tab is visible again — the run kept going the whole time.
     if (deepAgent) {
-      const start = await fetch(`${API_URL}/ask/agent/run`, {
+      const start = await apiFetch("/ask/agent/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, thread_id: threadId, research_budget: researchBudget }),
@@ -125,7 +125,7 @@ export default function Home() {
       let received = 0;
       for (;;) {
         try {
-          const res = await fetch(`${API_URL}/ask/agent/run/${run_id}?after=${received}`);
+          const res = await apiFetch(`/ask/agent/run/${run_id}?after=${received}`);
           if (res.status === 404) {
             setAnswer("Error: this run is gone (server restarted). Ask again.");
             break;
@@ -164,7 +164,7 @@ export default function Home() {
     // rest of the answer — surface that instead of hanging on "…" forever.
     // ponytail: no resume here; the deep-agent path has the durable-run treatment.
     try {
-      const res = await fetch(`${API_URL}/ask/stream`, {
+      const res = await apiFetch("/ask/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, format: fmt, model, top_k: topK }),

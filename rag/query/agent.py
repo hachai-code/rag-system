@@ -24,6 +24,7 @@ import asyncio
 import re
 from datetime import date
 from functools import lru_cache
+from uuid import UUID
 
 import psycopg
 from langfuse import get_client
@@ -365,10 +366,11 @@ def stream_agent(question: str):
 
 
 def _persist_thread(
-    thread_id: str, question: str, messages, registry: dict, pending_ids: list[str]
+    thread_id: str, question: str, messages, registry: dict, pending_ids: list[str], user_id: UUID
 ) -> None:
     """Serialize a paused run's message history + citation registry + the pending
-    approval-gated tool_call_ids to agent_threads, so resume can build DeferredToolResults."""
+    approval-gated tool_call_ids to agent_threads, owned by user_id, so resume can build
+    DeferredToolResults."""
     blob = {
         "history": ModelMessagesTypeAdapter.dump_python(messages, mode="json"),
         "registry": {str(k): v for k, v in registry.items()},
@@ -376,19 +378,22 @@ def _persist_thread(
     }
     with connect() as conn:
         conn.execute(
-            "INSERT INTO agent_threads (thread_id, question, messages, updated_at)"
-            " VALUES (%s, %s, %s, now())"
+            "INSERT INTO agent_threads (thread_id, question, messages, user_id, updated_at)"
+            " VALUES (%s, %s, %s, %s, now())"
             " ON CONFLICT (thread_id) DO UPDATE SET question = EXCLUDED.question,"
-            " messages = EXCLUDED.messages, updated_at = now()",
-            (thread_id, question, psycopg.types.json.Jsonb(blob)),
+            " messages = EXCLUDED.messages, user_id = EXCLUDED.user_id, updated_at = now()",
+            (thread_id, question, psycopg.types.json.Jsonb(blob), user_id),
         )
         conn.commit()
 
 
-def _load_thread(thread_id: str) -> dict | None:
+def _load_thread(thread_id: str, user_id: UUID) -> dict | None:
+    """The paused run for thread_id, only if it belongs to user_id (else None — a user
+    can't resume another user's thread)."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT question, messages FROM agent_threads WHERE thread_id = %s", (thread_id,)
+            "SELECT question, messages FROM agent_threads WHERE thread_id = %s AND user_id = %s",
+            (thread_id, user_id),
         ).fetchone()
     if row is None:
         return None
@@ -411,13 +416,16 @@ def _corpus_deps(research_budget: int | None, registry: dict | None = None) -> C
     return CorpusDeps(budget=Budget(limit=_budget(research_budget)), registry=registry or {})
 
 
-def run_deepagent(question: str, thread_id: str, research_budget: int | None = None) -> dict:
-    """Answer the question with the deep agent, traced as one span. Returns `{"status":
-    "done", "answer", "thread_id"}`, or — when HITL pauses before external research —
-    `{"status": "awaiting_approval", "thread_id", "pending"}` (resume with resume_deepagent)."""
+def run_deepagent(
+    question: str, thread_id: str, user_id: UUID, research_budget: int | None = None
+) -> dict:
+    """Answer the question with the deep agent as `user_id`, traced as one span. Returns
+    `{"status": "done", "answer", "thread_id"}`, or — when HITL pauses before external
+    research — `{"status": "awaiting_approval", "thread_id", "pending"}` (resume with
+    resume_deepagent)."""
     deps = _corpus_deps(research_budget)
     with connect() as conn:
-        deps.qa_block, top_score = lookup_similar_qa(conn, question)
+        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -431,6 +439,7 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
                 result.all_messages(),
                 deps.registry,
                 [c.tool_call_id for c in pending],
+                user_id,
             )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
             return {
@@ -447,16 +456,18 @@ def run_deepagent(question: str, thread_id: str, research_budget: int | None = N
                 _cited_corpus_sources(deps.registry, answer),
                 sorted(_cited_urls(answer)),
                 top_score,
+                user_id,
             )
         span.update(output=answer, metadata={"thread_id": thread_id})
     return {"status": "done", "answer": answer, "thread_id": thread_id}
 
 
-def resume_deepagent(thread_id: str, decision: str) -> dict:
+def resume_deepagent(thread_id: str, decision: str, user_id: UUID) -> dict:
     """Approve or reject the paused external-research gate on `thread_id` and continue —
-    from a separate, later request, since the state lives in agent_threads. Resumed runs
-    are not written to the Q&A cache (the original question isn't in scope here)."""
-    loaded = _load_thread(thread_id)
+    from a separate, later request, since the state lives in agent_threads. Only the user
+    who owns the thread can resume it. Resumed runs are not written to the Q&A cache (the
+    original question isn't in scope here)."""
+    loaded = _load_thread(thread_id, user_id)
     if loaded is None:
         return {"status": "done", "answer": _NO_ANSWER, "thread_id": thread_id}
     deps = _corpus_deps(None, registry=loaded["registry"])
@@ -482,6 +493,7 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
                 result.all_messages(),
                 deps.registry,
                 [c.tool_call_id for c in pending],
+                user_id,
             )
             span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
             return {
@@ -495,10 +507,10 @@ def resume_deepagent(thread_id: str, decision: str) -> dict:
     return {"status": "done", "answer": answer, "thread_id": thread_id}
 
 
-async def _astream_deep(question: str, thread_id: str, research_budget: int | None):
+async def _astream_deep(question: str, thread_id: str, user_id: UUID, research_budget: int | None):
     deps = _corpus_deps(research_budget)
     with connect() as conn:
-        deps.qa_block, top_score = lookup_similar_qa(conn, question)
+        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -533,6 +545,7 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
                     result.all_messages(),
                     deps.registry,
                     [c.tool_call_id for c in pending],
+                    user_id,
                 )
                 span.update(output="awaiting_approval", metadata={"thread_id": thread_id})
                 yield {
@@ -545,7 +558,7 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
             sources = _cited_corpus_sources(deps.registry, answer)
             with connect() as conn:
                 save_qa_record(
-                    conn, question, answer, sources, sorted(_cited_urls(answer)), top_score
+                    conn, question, answer, sources, sorted(_cited_urls(answer)), top_score, user_id
                 )
             span.update(output=answer, metadata={"thread_id": thread_id})
             yield {"type": "sources", "sources": sources}
@@ -554,18 +567,21 @@ async def _astream_deep(question: str, thread_id: str, research_budget: int | No
             yield {"type": "error", "message": str(e)}
 
 
-def stream_deepagent(question: str, thread_id: str, research_budget: int | None = None):
+def stream_deepagent(
+    question: str, thread_id: str, user_id: UUID, research_budget: int | None = None
+):
     """Yield event dicts as the deep agent works: a `status` per tool call, a `result` per
     tool result, then a `sources` + `answer` (or `awaiting_approval`, or `error`)."""
-    yield from _drive(_astream_deep(question, thread_id, research_budget))
+    yield from _drive(_astream_deep(question, thread_id, user_id, research_budget))
 
 
 if __name__ == "__main__":
     import sys
+    from uuid import uuid4
 
     question = sys.argv[1] if len(sys.argv) > 1 else "What is innerdance?"
     print(f"Q: {question}\n")
-    result = run_deepagent(question, thread_id="cli")
+    result = run_deepagent(question, thread_id="cli", user_id=uuid4())
     if result["status"] == "awaiting_approval":
         print(f"Awaiting approval before research: {result['pending']}")
     else:
