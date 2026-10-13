@@ -9,12 +9,15 @@ Run: uv run pytest rag/test_agent_stream.py
 
 import json
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from pydantic_ai.models.test import TestModel
 
 from rag.query import agent as agent_module
 from rag.query import tools as tools_module
+
+USER_ID = uuid4()
 
 HIT = {
     "id": 7,
@@ -41,7 +44,10 @@ def stub_seams(monkeypatch):
     monkeypatch.setattr(tools_module, "connect", MagicMock())
     monkeypatch.setattr(tools_module, "tavily_search", lambda query, k=5: [SEARCH_RESULT])
     monkeypatch.setattr(tools_module, "retrieve", lambda conn, query, k, method: [HIT])
-    monkeypatch.setattr(agent_module, "lookup_similar_qa", lambda conn, question: ("", 0.0))
+    monkeypatch.setattr(
+        agent_module, "lookup_similar_qa", lambda conn, question, user_id: ("", 0.0)
+    )
+    monkeypatch.setattr(agent_module, "save_qa_record", lambda *args: None)
     agent_module.web_agent.cache_clear()
     agent_module.corpus_agent.cache_clear()
     yield
@@ -52,8 +58,10 @@ def stub_seams(monkeypatch):
 def test_web_stream_emits_tool_traffic_then_done(monkeypatch, stub_seams):
     model = TestModel(call_tools=["web_search"], custom_output_text="Innerdance is a practice.")
     monkeypatch.setattr(agent_module, "openrouter_model", lambda _model_id: model)
+    saved = []
+    monkeypatch.setattr(agent_module, "save_qa_record", lambda *args: saved.append(args))
 
-    events = list(agent_module.stream_agent("what is innerdance?"))
+    events = list(agent_module.stream_agent("what is innerdance?", USER_ID))
 
     assert [e["type"] for e in events] == ["tool_call", "tool_result", "done"]
     call, result, done = events
@@ -64,6 +72,7 @@ def test_web_stream_emits_tool_traffic_then_done(monkeypatch, stub_seams):
     assert done["answer"] == "Innerdance is a practice."
     # The URLs the tool saw, collected on deps through the run.
     assert done["sources"] == ["https://example.com/innerdance"]
+    assert saved, "the finished web run writes its answer to the Q&A cache"
 
 
 def test_deep_stream_emits_status_result_then_sources_and_answer(monkeypatch, stub_seams):
@@ -75,7 +84,7 @@ def test_deep_stream_emits_status_result_then_sources_and_answer(monkeypatch, st
     saved = []
     monkeypatch.setattr(agent_module, "save_qa_record", lambda *args: saved.append(args))
 
-    events = list(agent_module.stream_deepagent("what is innerdance?", "t1"))
+    events = list(agent_module.stream_deepagent("what is innerdance?", "t1", USER_ID))
 
     assert [e["type"] for e in events] == ["status", "result", "sources", "answer"]
     status, result, sources, answer = events
@@ -98,7 +107,7 @@ def test_deep_stream_pauses_on_the_hitl_gate(monkeypatch, stub_seams):
     model = TestModel(call_tools=["research_point"])
     monkeypatch.setattr(agent_module, "openrouter_model", lambda _model_id: model)
 
-    events = list(agent_module.stream_deepagent("what is innerdance?", "t1"))
+    events = list(agent_module.stream_deepagent("what is innerdance?", "t1", USER_ID))
 
     # An approval-gated research_point ends the run with a DeferredToolRequests instead of
     # an answer; _persist_thread serializes the history for real (its DB write is stubbed).
@@ -115,6 +124,6 @@ def test_web_stream_reports_a_failed_run_as_an_error_event(monkeypatch, stub_sea
 
     monkeypatch.setattr(agent_module, "openrouter_model", boom)
 
-    assert list(agent_module.stream_agent("what is innerdance?")) == [
+    assert list(agent_module.stream_agent("what is innerdance?", USER_ID)) == [
         {"type": "error", "message": "no model for you"}
     ]

@@ -67,11 +67,13 @@ class Budget:
 
 @dataclass
 class WebDeps:
-    """Deps for the web agent: the shared budget and every URL seen in tool traffic
-    (the citation output-validator checks the answer's citations against this set)."""
+    """Deps for the web agent: the shared budget, every URL seen in tool traffic (the
+    citation output-validator checks the answer's citations against this set), and the
+    similar-past-Q&As block to inject."""
 
     budget: Budget
     seen_urls: set[str] = field(default_factory=set)
+    qa_block: str = ""
 
 
 @dataclass

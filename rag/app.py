@@ -38,7 +38,7 @@ from .guardrails import BLOCKED, check_input, check_output
 from .query.agent import resume_deepagent, run_deepagent, stream_agent, stream_deepagent
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer_stream
 from .query.gate import NO_ANSWER, ask_gate, gate_retrieve
-from .query.memory import get_memory, list_memories
+from .query.memory import delete_memory, get_memory, list_memories
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -316,7 +316,7 @@ def agent_stream(
         if check_input(body.question):
             yield {"type": "error", "message": BLOCKED}
             return
-        yield from stream_agent(body.question)
+        yield from stream_agent(body.question, user.id)
 
     return sse(events())
 
@@ -564,3 +564,11 @@ def qa_memory(
     if record is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return QAMemoryDetail(**record)
+
+
+@app.delete("/qa/{key}", status_code=204)
+@limiter.limit(RATE_LIMIT)
+def remove_qa_memory(request: Request, key: str, user: User = Depends(current_active_user)) -> None:
+    with connect() as conn:
+        if not delete_memory(conn, key, user.id):
+            raise HTTPException(status_code=404, detail="memory not found")

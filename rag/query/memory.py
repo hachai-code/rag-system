@@ -1,4 +1,5 @@
-"""The deep agent's Q&A long-term memory: a semantic cache over a plain pgvector table.
+"""The agents' Q&A long-term memory: a semantic cache over a plain pgvector table, shared
+by the web agent (/agent/stream) and the deep agent (/ask/agent*).
 
 Each completed run stores its question (Voyage-embedded), answer, and sources in
 `qa_memory`; a later run whose question is close enough (cosine similarity) is shown the
@@ -35,8 +36,8 @@ def lookup_similar_qa(
     conn: psycopg.Connection, question: str, user_id: UUID, limit: int = 3
 ) -> tuple[str, float]:
     """(formatted top-N similar past Q&As, top cosine similarity) — ("", 0.0) when the
-    cache has nothing. Scoped to the asking user's own cache. The block feeds the corpus
-    agent's prompt; the top score gates the end-of-run cache write in save_qa_record
+    cache has nothing. Scoped to the asking user's own cache. The block feeds the agent's
+    prompt; the top score gates the end-of-run cache write in save_qa_record
     (skip near-duplicates)."""
     rows = conn.execute(
         """
@@ -96,6 +97,16 @@ def list_memories(conn: psycopg.Connection, user_id: UUID, limit: int = 200) -> 
         (user_id, limit),
         # ponytail: hard cap, paginate if the cache outgrows it
     ).fetchall()
+
+
+def delete_memory(conn: psycopg.Connection, key: str, user_id: UUID) -> bool:
+    """Delete one of the user's stored Q&A memories. True if a row was removed, False when
+    the key is unknown or owned by someone else."""
+    deleted = conn.execute(
+        "DELETE FROM qa_memory WHERE key = %s AND user_id = %s", (key, user_id)
+    ).rowcount
+    conn.commit()
+    return deleted > 0
 
 
 def get_memory(conn: psycopg.Connection, key: str, user_id: UUID) -> dict | None:
