@@ -80,6 +80,17 @@ export default function Home() {
     setMemory(await getJSON<QAMemoryDetail>(`/qa/${key}`));
   }
 
+  async function deleteMemory(key: string) {
+    if (!confirm("Delete this memory?")) return;
+    const res = await apiFetch(`/qa/${key}`, { method: "DELETE" });
+    if (!res.ok) return;
+    if (memoryKey === key) {
+      setMemoryKey(null);
+      setMemory(null);
+    }
+    loadMemories();
+  }
+
   // Keep the newest agent step in view without growing the page: the trace is a
   // fixed-height scroller that follows the tail as steps stream in.
   const traceRef = useRef<HTMLDivElement>(null);
@@ -195,7 +206,12 @@ export default function Home() {
 
   return (
     <div className="flex">
-      <MemorySidebar memories={memories} selectedKey={memoryKey} onSelect={selectMemory} />
+      <MemorySidebar
+        memories={memories}
+        selectedKey={memoryKey}
+        onSelect={selectMemory}
+        onDelete={deleteMemory}
+      />
       <main className="mx-auto max-w-4xl flex-1 px-4 py-10">
 
       {memoryKey !== null ? (

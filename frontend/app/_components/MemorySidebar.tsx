@@ -8,10 +8,12 @@ export function MemorySidebar({
   memories,
   selectedKey,
   onSelect,
+  onDelete,
 }: {
   memories: QAMemory[] | null; // null = still fetching
   selectedKey: string | null;
   onSelect: (key: string) => void;
+  onDelete: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -28,18 +30,26 @@ export function MemorySidebar({
       )}
       <div className="space-y-1">
         {(memories ?? []).map((m) => (
-          <button
+          <div
             key={m.key}
-            onClick={() => select(m.key)}
-            className={`block w-full rounded border px-3 py-2 text-left text-sm hover:bg-gray-100 ${
+            className={`group flex items-start rounded border text-sm hover:bg-gray-100 ${
               selectedKey === m.key ? "border-black bg-gray-100" : "border-transparent"
             }`}
           >
-            <span className="line-clamp-2">{m.question}</span>
-            <span className="mt-0.5 block text-xs text-gray-400">
-              {new Date(m.created_at).toLocaleDateString()}
-            </span>
-          </button>
+            <button onClick={() => select(m.key)} className="min-w-0 flex-1 px-3 py-2 text-left">
+              <span className="line-clamp-2">{m.question}</span>
+              <span className="mt-0.5 block text-xs text-gray-400">
+                {new Date(m.created_at).toLocaleDateString()}
+              </span>
+            </button>
+            <button
+              onClick={() => onDelete(m.key)}
+              aria-label="Delete memory"
+              className="px-2 py-2 text-gray-300 hover:text-red-600 md:opacity-0 md:group-hover:opacity-100"
+            >
+              ×
+            </button>
+          </div>
         ))}
       </div>
     </>

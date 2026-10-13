@@ -6,7 +6,10 @@ Run: uv run pytest rag/test_agent_run.py
 
 import json
 import time
+from types import SimpleNamespace
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rag import app as app_module
@@ -20,7 +23,15 @@ EVENTS = [
 ]
 
 
-def fake_stream(question, thread_id, research_budget=None):
+@pytest.fixture(autouse=True)
+def _auth_user():
+    user = SimpleNamespace(id=uuid4())
+    app_module.app.dependency_overrides[app_module.current_active_user] = lambda: user
+    yield
+    app_module.app.dependency_overrides.clear()
+
+
+def fake_stream(question, thread_id, user_id, research_budget=None):
     for event in EVENTS:
         time.sleep(0.05)  # the run outlives any single read of the stream
         yield event

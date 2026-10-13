@@ -113,9 +113,9 @@ Work in this order:
 2. Pull out the substantive points your draft rests on. Delegate each one to the research_point tool to corroborate or elaborate it with outside sources.
 3. Deliver the complete answer — every corpus point enriched with what the research turned up, written out in full, citing both the corpus passage [n] and the web URLs the research reported.
 
-If the corpus does not cover the question, say so plainly instead of guessing.
+If the corpus does not cover the question, say so plainly instead of guessing."""
 
-You may be shown similar past Q&As from earlier runs under "Similar past Q&As". Treat them as leads, not truth: reuse their findings and sources when the past question genuinely matches, but re-verify against the corpus and redo web research when the match is loose. Never cite a past Q&A itself as a source."""
+QA_LEADS_NOTE = """You may be shown similar past Q&As from earlier runs under "Similar past Q&As". Treat them as leads, not truth: reuse their findings and sources when the past question genuinely matches, but re-verify and redo your own research when the match is loose. Never cite a past Q&A itself as a source."""
 
 
 class DeepAnswer(BaseModel):
@@ -144,8 +144,11 @@ def web_agent() -> Agent[WebDeps, str]:
     )
 
     @agent.instructions
-    def _dated_prompt() -> str:  # per-run so the date can't go stale in the cached agent
-        return WEB_SYSTEM_PROMPT.format(today=date.today().isoformat())
+    def _dated_prompt(ctx: RunContext[WebDeps]) -> str:  # per-run so the date can't go stale
+        prompt = WEB_SYSTEM_PROMPT.format(today=date.today().isoformat())
+        if ctx.deps.qa_block:
+            return f"{prompt}\n\n{QA_LEADS_NOTE}\n\n## Similar past Q&As\n{ctx.deps.qa_block}"
+        return prompt
 
     @agent.output_validator
     def _verify_citations(ctx: RunContext[WebDeps], output: str) -> str:
@@ -178,7 +181,7 @@ def corpus_agent() -> Agent[CorpusDeps, DeepAnswer]:
     @agent.instructions
     def _prompt(ctx: RunContext[CorpusDeps]) -> str:
         if ctx.deps.qa_block:
-            return f"{AGENT_PROMPT}\n\n## Similar past Q&As\n{ctx.deps.qa_block}"
+            return f"{AGENT_PROMPT}\n\n{QA_LEADS_NOTE}\n\n## Similar past Q&As\n{ctx.deps.qa_block}"
         return AGENT_PROMPT
 
     return agent
@@ -321,8 +324,10 @@ def run_agent(question: str) -> str:
     return answer
 
 
-async def _astream_web(question: str):
+async def _astream_web(question: str, user_id: UUID):
     deps = WebDeps(budget=Budget(limit=0))
+    with connect() as conn:
+        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
     with get_client().start_as_current_observation(
         as_type="span", name="web-search-agent", input=question
     ) as span:
@@ -350,16 +355,20 @@ async def _astream_web(question: str):
                         }
                     elif isinstance(event, AgentRunResultEvent):  # always last
                         answer = event.result.output
+            with connect() as conn:
+                save_qa_record(
+                    conn, question, answer, [], sorted(_cited_urls(answer)), top_score, user_id
+                )
             span.update(output=answer)
             yield {"type": "done", "answer": answer, "sources": sorted(deps.seen_urls)}
         except Exception as e:
             yield {"type": "error", "message": str(e)}
 
 
-def stream_agent(question: str):
+def stream_agent(question: str, user_id: UUID):
     """SSE events for /agent/stream: tool_call / tool_result as the web agent works, then
-    one terminal `done` (answer + sources) — or `error`."""
-    yield from _drive(_astream_web(question))
+    one terminal `done` (answer + sources) — or `error`. Reads/writes the user's Q&A cache."""
+    yield from _drive(_astream_web(question, user_id))
 
 
 # --- Deep agent runs ---------------------------------------------------------------
