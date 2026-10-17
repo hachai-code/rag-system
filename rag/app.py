@@ -38,7 +38,13 @@ from .guardrails import BLOCKED, check_input, check_output
 from .query.agent import resume_deepagent, run_deepagent, stream_agent, stream_deepagent
 from .query.answer import ANSWER_FORMAT, GEN_MODELS, GEN_PROVIDER, answer_stream
 from .query.gate import NO_ANSWER, ask_gate, gate_retrieve
-from .query.memory import delete_memory, get_memory, list_memories
+from .query.memory import (
+    delete_memory,
+    get_memory,
+    list_memories,
+    lookup_similar_qa,
+    save_qa_record,
+)
 from .query.retrieve import (
     HYPE,
     METHOD,
@@ -290,13 +296,35 @@ def ask_stream(
                 yield {"type": "text", "text": NO_ANSWER}
                 return
             answer_text = []
+            sources: dict[int, CorpusSource] = {}  # chunk_id -> source, in citation order
             for event in answer_stream(
                 body.question, hits, model=GEN_MODELS[body.model], fmt=body.format
             ):
                 if event["type"] == "text":
                     answer_text.append(event["text"])
+                elif event["type"] == "citation" and event["chunk_id"] not in sources:
+                    sources[event["chunk_id"]] = CorpusSource(
+                        n=len(sources) + 1,
+                        chunk_id=event["chunk_id"],
+                        title=event["title"],
+                        source=event["source"],
+                    )
                 yield event
-            span.update(output="".join(answer_text))
+            answer = "".join(answer_text)
+            span.update(output=answer)
+            # Write-only: this path doesn't read past Q&As (it answers from the corpus
+            # alone), but its answers become leads for the agents and show in /qa.
+            with connect() as conn:
+                match = lookup_similar_qa(conn, body.question, user.id, limit=1)
+                save_qa_record(
+                    conn,
+                    body.question,
+                    answer,
+                    [s.model_dump() for s in sources.values()],
+                    [],
+                    match,
+                    user.id,
+                )
 
     return sse(events())
 
@@ -545,7 +573,7 @@ class QAMemoryDetail(QAMemory):
     research_files: dict[str, str]
 
 
-# The deep agent's Q&A long-term memory (rag/query/memory.py pgvector cache), queried
+# The Q&A long-term memory (rag/query/memory.py pgvector cache), queried
 # read-only.
 @app.get("/qa")
 @limiter.limit(RATE_LIMIT)

@@ -327,7 +327,8 @@ def run_agent(question: str) -> str:
 async def _astream_web(question: str, user_id: UUID):
     deps = WebDeps(budget=Budget(limit=0))
     with connect() as conn:
-        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
+        match = lookup_similar_qa(conn, question, user_id)
+        deps.qa_block = match.block
     with get_client().start_as_current_observation(
         as_type="span", name="web-search-agent", input=question
     ) as span:
@@ -357,7 +358,7 @@ async def _astream_web(question: str, user_id: UUID):
                         answer = event.result.output
             with connect() as conn:
                 save_qa_record(
-                    conn, question, answer, [], sorted(_cited_urls(answer)), top_score, user_id
+                    conn, question, answer, [], sorted(_cited_urls(answer)), match, user_id
                 )
             span.update(output=answer)
             yield {"type": "done", "answer": answer, "sources": sorted(deps.seen_urls)}
@@ -434,7 +435,8 @@ def run_deepagent(
     resume_deepagent)."""
     deps = _corpus_deps(research_budget)
     with connect() as conn:
-        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
+        match = lookup_similar_qa(conn, question, user_id)
+        deps.qa_block = match.block
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -464,7 +466,7 @@ def run_deepagent(
                 answer,
                 _cited_corpus_sources(deps.registry, answer),
                 sorted(_cited_urls(answer)),
-                top_score,
+                match,
                 user_id,
             )
         span.update(output=answer, metadata={"thread_id": thread_id})
@@ -519,7 +521,8 @@ def resume_deepagent(thread_id: str, decision: str, user_id: UUID) -> dict:
 async def _astream_deep(question: str, thread_id: str, user_id: UUID, research_budget: int | None):
     deps = _corpus_deps(research_budget)
     with connect() as conn:
-        deps.qa_block, top_score = lookup_similar_qa(conn, question, user_id)
+        match = lookup_similar_qa(conn, question, user_id)
+        deps.qa_block = match.block
     with get_client().start_as_current_observation(
         as_type="span", name="rag-agent", input=question
     ) as span:
@@ -567,7 +570,7 @@ async def _astream_deep(question: str, thread_id: str, user_id: UUID, research_b
             sources = _cited_corpus_sources(deps.registry, answer)
             with connect() as conn:
                 save_qa_record(
-                    conn, question, answer, sources, sorted(_cited_urls(answer)), top_score, user_id
+                    conn, question, answer, sources, sorted(_cited_urls(answer)), match, user_id
                 )
             span.update(output=answer, metadata={"thread_id": thread_id})
             yield {"type": "sources", "sources": sources}

@@ -16,6 +16,7 @@ from pydantic_ai.models.test import TestModel
 
 from rag.query import agent as agent_module
 from rag.query import tools as tools_module
+from rag.query.memory import QAMatch
 
 USER_ID = uuid4()
 
@@ -45,7 +46,7 @@ def stub_seams(monkeypatch):
     monkeypatch.setattr(tools_module, "tavily_search", lambda query, k=5: [SEARCH_RESULT])
     monkeypatch.setattr(tools_module, "retrieve", lambda conn, query, k, method: [HIT])
     monkeypatch.setattr(
-        agent_module, "lookup_similar_qa", lambda conn, question, user_id: ("", 0.0)
+        agent_module, "lookup_similar_qa", lambda conn, question, user_id: QAMatch("", 0.0, [])
     )
     monkeypatch.setattr(agent_module, "save_qa_record", lambda *args: None)
     agent_module.web_agent.cache_clear()

@@ -194,6 +194,7 @@ export default function Home() {
       setAnswer((prev) => prev + "\n\n[Connection lost — ask again to retry.]");
     } finally {
       setLoading(false);
+      loadMemories();
     }
   }
 
