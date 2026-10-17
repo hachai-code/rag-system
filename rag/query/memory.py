@@ -11,6 +11,7 @@ useful for question-to-question matching). Table lives in db/migrations/0004.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import psycopg
@@ -79,10 +80,12 @@ def save_qa_record(
     web_urls: list[str],
     match: QAMatch,
     user_id: UUID,
+    created_at: datetime | None = None,
 ) -> None:
     """One Q&A cache record per completed run, owned by `user_id` and semantically indexed
     on the question. Skipped when the run-start lookup found a near-duplicate cached
-    question: the answer leaned on that record, so writing it again would only duplicate."""
+    question: the answer leaned on that record, so writing it again would only duplicate.
+    `created_at` defaults to now; the Langfuse backfill passes the original trace time."""
     if match.top_score >= QA_DEDUP_SCORE:
         return
     value = {
@@ -93,9 +96,16 @@ def save_qa_record(
         "research_files": {},  # the virtual FS is gone; findings return in-band now
     }
     conn.execute(
-        "INSERT INTO qa_memory (key, question, value, embedding, user_id)"
-        " VALUES (%s, %s, %s, %s::vector, %s)",
-        (uuid4().hex, question, psycopg.types.json.Jsonb(value), match.embedding, user_id),
+        "INSERT INTO qa_memory (key, question, value, embedding, user_id, created_at)"
+        " VALUES (%s, %s, %s, %s::vector, %s, COALESCE(%s, now()))",
+        (
+            uuid4().hex,
+            question,
+            psycopg.types.json.Jsonb(value),
+            match.embedding,
+            user_id,
+            created_at,
+        ),
     )
     conn.commit()
 
