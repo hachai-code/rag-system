@@ -315,14 +315,14 @@ def ask_stream(
             # Write-only: this path doesn't read past Q&As (it answers from the corpus
             # alone), but its answers become leads for the agents and show in /qa.
             with connect() as conn:
-                _, top_score = lookup_similar_qa(conn, body.question, user.id, limit=1)
+                match = lookup_similar_qa(conn, body.question, user.id, limit=1)
                 save_qa_record(
                     conn,
                     body.question,
                     answer,
                     [s.model_dump() for s in sources.values()],
                     [],
-                    top_score,
+                    match,
                     user.id,
                 )
 

@@ -10,6 +10,7 @@ questions and query questions share one space (Voyage's query/document asymmetry
 useful for question-to-question matching). Table lives in db/migrations/0004.
 """
 
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import psycopg
@@ -32,13 +33,23 @@ def _embed(text: str) -> list[float]:
     )
 
 
+@dataclass
+class QAMatch:
+    """The run-start cache lookup. `block` feeds the agent's prompt; `top_score` gates the
+    end-of-run write (skip near-duplicates); `embedding` is the question's vector, reused by
+    save_qa_record so a run pays for one Voyage call, not two."""
+
+    block: str
+    top_score: float
+    embedding: list[float]
+
+
 def lookup_similar_qa(
     conn: psycopg.Connection, question: str, user_id: UUID, limit: int = 3
-) -> tuple[str, float]:
-    """(formatted top-N similar past Q&As, top cosine similarity) — ("", 0.0) when the
-    cache has nothing. Scoped to the asking user's own cache. The block feeds the agent's
-    prompt; the top score gates the end-of-run cache write in save_qa_record
-    (skip near-duplicates)."""
+) -> QAMatch:
+    """The top-N similar past Q&As from the asking user's own cache, formatted for the
+    prompt (block "" and top_score 0.0 when the cache has nothing)."""
+    embedding = _embed(question)
     rows = conn.execute(
         """
         SELECT value, 1 - (embedding <=> %(emb)s::vector) AS score
@@ -47,17 +58,17 @@ def lookup_similar_qa(
         ORDER BY embedding <=> %(emb)s::vector
         LIMIT %(limit)s
         """,
-        {"emb": _embed(question), "uid": user_id, "limit": limit},
+        {"emb": embedding, "uid": user_id, "limit": limit},
     ).fetchall()
     if not rows:
-        return "", 0.0
+        return QAMatch("", 0.0, embedding)
     block = "\n\n".join(
         f"### Past Q (similarity {r['score']:.2f}): {r['value']['question']}\n"
         f"{r['value']['answer'][:QA_ANSWER_CHARS]}\n"
         f"Web sources: {', '.join(r['value'].get('web_urls', [])) or 'none'}"
         for r in rows
     )
-    return block, rows[0]["score"]
+    return QAMatch(block, rows[0]["score"], embedding)
 
 
 def save_qa_record(
@@ -66,13 +77,13 @@ def save_qa_record(
     answer: str,
     corpus_sources: list[dict],
     web_urls: list[str],
-    top_score: float,
+    match: QAMatch,
     user_id: UUID,
 ) -> None:
     """One Q&A cache record per completed run, owned by `user_id` and semantically indexed
     on the question. Skipped when the run-start lookup found a near-duplicate cached
     question: the answer leaned on that record, so writing it again would only duplicate."""
-    if top_score >= QA_DEDUP_SCORE:
+    if match.top_score >= QA_DEDUP_SCORE:
         return
     value = {
         "question": question,
@@ -84,7 +95,7 @@ def save_qa_record(
     conn.execute(
         "INSERT INTO qa_memory (key, question, value, embedding, user_id)"
         " VALUES (%s, %s, %s, %s::vector, %s)",
-        (uuid4().hex, question, psycopg.types.json.Jsonb(value), _embed(question), user_id),
+        (uuid4().hex, question, psycopg.types.json.Jsonb(value), match.embedding, user_id),
     )
     conn.commit()
 
